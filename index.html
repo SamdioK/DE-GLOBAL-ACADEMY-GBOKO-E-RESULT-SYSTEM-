@@ -554,11 +554,32 @@ async function resolveSupabaseClass(className) {
   return result.data;
 }
 
+async function resolveSupabaseSubject(subjectName) {
+  if (!supabaseClient || !authenticatedProfile || !authenticatedProfile.school_id) {
+    throw new Error('An authenticated Supabase school account is required to look up this subject.');
+  }
+  var result = await supabaseClient.from('subjects')
+    .select('*')
+    .eq('school_id', authenticatedProfile.school_id);
+  if (result.error) throw result.error;
+  var wanted = String(subjectName || '').trim().toLowerCase();
+  var matches = (result.data || []).filter(function(subject) {
+    return ['subject_name', 'name', 'title', 'subject'].some(function(field) {
+      return String(subject[field] || '').trim().toLowerCase() === wanted;
+    });
+  });
+  if (matches.length === 0) throw new Error('Subject "' + subjectName + '" was not found in the Supabase subjects table.');
+  if (matches.length > 1) throw new Error('More than one Supabase subject matches "' + subjectName + '". Resolve duplicate subject records before assigning this teacher.');
+  if (!matches[0].id) throw new Error('The Supabase subject record for "' + subjectName + '" has no UUID.');
+  return matches[0];
+}
+
 async function loadAssignmentDropdown() {
   var select = document.getElementById('selectedAssignment');
   select.innerHTML = '<option value="">Loading...</option>';
   var assignments = await cloudStorage.load('subjectAssignments');
-  if (!assignments) assignments = [];
+  if (!Array.isArray(assignments)) assignments = [];
+  if (removeSubjectAssignmentPasswords(assignments)) await cloudStorage.save('subjectAssignments', assignments);
   var activated = assignments.filter(function(a) { return a.activated; });
   if (activated.length === 0) {
     select.innerHTML = '<option value="">No activated subject slots available</option>';
@@ -625,6 +646,7 @@ async function handleSupabaseLogin(userType, errorDiv) {
     authenticatedProfile = profile;
     cloudStorage.setSchoolId(String(profile.school_id));
     await loadSchoolData();
+    await loadSupabaseAssessmentConfigurations();
 
     var appType = { administrator: 'admin', sub_administrator: 'subadmin', form_master: 'formmaster', subject_teacher: 'subjectteacher', portal_developer: 'developer', student: 'student' }[profile.role];
     currentUser = { type: appType, id: profile.id, name: profile.full_name, email: authResult.data.user.email, profile: profile };
@@ -632,10 +654,25 @@ async function handleSupabaseLogin(userType, errorDiv) {
     if (appType === 'subjectteacher') {
       var assignmentId = document.getElementById('selectedAssignment').value;
       var assignment = subjectAssignments.find(function(item) { return String(item.id) === String(assignmentId); });
-      if (!assignment) throw new Error('Select an assigned class and subject.');
-      var assignedClass = await resolveSupabaseClass(assignment.className);
+      if (!assignment || !assignment.activated) throw new Error('Select an activated assigned class and subject.');
+      if (String(assignment.teacherEmail || '').trim().toLowerCase() !== String(authResult.data.user.email || '').trim().toLowerCase()) {
+        throw new Error('The selected assignment does not belong to the signed-in Subject Teacher account.');
+      }
+      var assignedClass = assignment.classId ? { id: assignment.classId, class_name: assignment.className } : await resolveSupabaseClass(assignment.className);
+      var assignedSubject = assignment.subjectId ? { id: assignment.subjectId } : await resolveSupabaseSubject(assignment.subject);
+      var assignmentResult = await supabaseClient.from('teacher_assignments')
+        .select('id,class_id,subject_id,academic_session_id')
+        .eq('school_id', profile.school_id)
+        .eq('teacher_id', profile.id)
+        .eq('class_id', assignedClass.id)
+        .eq('subject_id', assignedSubject.id)
+        .eq('academic_session_id', activeAcademicSession.id)
+        .maybeSingle();
+      if (assignmentResult.error) throw assignmentResult.error;
+      if (!assignmentResult.data) throw new Error('This class and subject are not assigned to your Supabase account for the active academic session.');
       assignment.classId = assignedClass.id;
       assignment.className = assignedClass.class_name;
+      assignment.subjectId = assignedSubject.id;
       currentUser.arm = assignedClass.class_name; currentUser.subject = assignment.subject;
     }
     if (appType === 'student') currentUser.admission = document.getElementById('studentAdmission').value.trim();
@@ -643,7 +680,6 @@ async function handleSupabaseLogin(userType, errorDiv) {
       var subadmin = subAdministrators.find(function(item) { return item.username === document.getElementById('subadminUsername').value.trim(); });
       currentUser.permissions = subadmin && subadmin.permissions || {};
     }
-    await loadSupabaseAssessmentConfigurations();
     showApp();
   } catch (error) {
     if (supabaseClient) await supabaseClient.auth.signOut();
@@ -725,24 +761,6 @@ async function handleLogin() {
   } else if (userType === 'formmaster') {
     errorDiv.textContent = 'Form Master sign-in requires Supabase authentication.';
     errorDiv.classList.remove('hidden');
-  } else if (userType === 'subjectteacher') {
-    var assignmentId = document.getElementById('selectedAssignment').value;
-    var stPw = document.getElementById('assignmentPassword').value;
-    if (!assignmentId || !stPw) { errorDiv.textContent = 'Please fill all fields'; errorDiv.classList.remove('hidden'); return; }
-
-    currentSchool = school;
-    cloudStorage.setSchoolId('MAIN');
-    await loadSchoolData();
-
-    var assignment = subjectAssignments.find(function(a) { return String(a.id) === String(assignmentId); });
-    if (!assignment || !assignment.activated) { errorDiv.textContent = 'This subject slot is not activated. Contact admin.'; errorDiv.classList.remove('hidden'); return; }
-
-    if (assignment.password === stPw) {
-      currentUser = { type: 'subjectteacher', name: assignment.teacherName, arm: assignment.className, subject: assignment.subject };
-      showApp();
-    } else {
-      errorDiv.textContent = 'Invalid password'; errorDiv.classList.remove('hidden');
-    }
   } else if (userType === 'subadmin') {
     var subUsername = document.getElementById('subadminUsername').value.trim();
     var subPassword = document.getElementById('subadminPassword').value;
@@ -825,6 +843,21 @@ function removeFormMasterPasswords() {
   return removed;
 }
 
+function removeSubjectAssignmentPasswords(assignments) {
+  var removed = false;
+  if (!Array.isArray(assignments)) return removed;
+  assignments.forEach(function(assignment) {
+    if (!assignment || typeof assignment !== 'object') return;
+    ['password', 'teacherPassword'].forEach(function(field) {
+      if (Object.prototype.hasOwnProperty.call(assignment, field)) {
+        delete assignment[field];
+        removed = true;
+      }
+    });
+  });
+  return removed;
+}
+
 async function loadSchoolData() {
   var loadedArms = await cloudStorage.load('classArms');
   var loadedMasters = await cloudStorage.load('formMasters');
@@ -844,7 +877,8 @@ async function loadSchoolData() {
   if (loadedArms) classArms = loadedArms; else generateArms();
   if (loadedMasters) formMasters = Array.isArray(loadedMasters) ? loadedMasters : [];
   var removedLegacyFormMasterPasswords = removeFormMasterPasswords();
-  if (loadedAssignments) subjectAssignments = loadedAssignments; else subjectAssignments = [];
+  if (loadedAssignments) subjectAssignments = Array.isArray(loadedAssignments) ? loadedAssignments : []; else subjectAssignments = [];
+  var removedLegacySubjectAssignmentPasswords = removeSubjectAssignmentPasswords(subjectAssignments);
   assessmentConfig = {};
   managementStaff = Array.isArray(loadedManagementStaff) ? loadedManagementStaff : [];
   subAdministrators = Array.isArray(loadedSubAdministrators) ? loadedSubAdministrators : [];
@@ -882,7 +916,7 @@ async function loadSchoolData() {
     schoolInfo = { name: currentSchool.schoolName, address: currentSchool.address || '', email: currentSchool.email, phone: currentSchool.phone, session: currentSchool.session, principalName: currentSchool.principalName, logo: currentSchool.logo || '', principalSignature: currentSchool.principalSignature || '', principalComment: currentSchool.principalComment || '' };
   }
 
-  var migrated = migrateOldClassNames() || removedLegacyFormMasterPasswords;
+  var migrated = migrateOldClassNames() || removedLegacyFormMasterPasswords || removedLegacySubjectAssignmentPasswords;
   if (syncStaffDatabaseFromExistingRecords()) migrated = true;
   if (!Array.isArray(loadedPortalStaffSelections)) {
     portalStaffSelections = staffDatabase.filter(function(record) { return record.showOnPortal === true; }).map(function(record) {
@@ -1002,6 +1036,7 @@ async function loadSupabaseAssessmentConfigurations(sessionId, termId) {
 async function saveAllData() {
   try {
     removeFormMasterPasswords();
+    removeSubjectAssignmentPasswords(subjectAssignments);
     var promises = [];
     promises.push(cloudStorage.save('classArms', classArms));
     promises.push(cloudStorage.save('formMasters', formMasters));
@@ -1936,7 +1971,7 @@ function renderMasters() {
   html += '</div><p style="color:#666; font-size:13px; margin-bottom:15px;">Assign a teacher to a specific class arm and subject. Activate a slot to let that teacher log in and enter scores for only that subject.</p>';
   html += '<div style="background: #f9f9f9; padding: 15px; border-radius: 8px; margin-bottom: 20px;"><h3 style="margin: 0 0 15px 0; font-size: 16px;">Add Subject Teacher</h3><div class="grid grid-3">';
   html += '<select id="newStArm">' + classArms.map(function(a) { return '<option value="' + a.name + '">' + a.name + '</option>'; }).join('') + '</select>';
-  html += '<select id="newStSubject"></select>';
+  html += '<select id="newStSubject"><option value="">Select an active subject</option></select>';
   html += '<input type="text" id="newStName" placeholder="Teacher Name" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">';
   html += '<input type="email" id="newStEmail" placeholder="Teacher Email" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">';
   html += '<input type="password" id="newStPassword" placeholder="Password" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">';
@@ -1945,9 +1980,9 @@ function renderMasters() {
   if (subjectAssignments.length === 0) {
     html += '<p style="color:#999; padding: 10px 0;">No subject teachers added yet</p>';
   } else {
-    html += '<div style="overflow-x:auto;"><table><thead><tr><th>Class</th><th>Subject</th><th>Teacher</th><th>Email</th><th>Password</th><th>Status</th><th>Action</th></tr></thead><tbody>';
+    html += '<div style="overflow-x:auto;"><table><thead><tr><th>Class</th><th>Subject</th><th>Teacher</th><th>Email</th><th>Status</th><th>Action</th></tr></thead><tbody>';
     subjectAssignments.forEach(function(a) {
-      html += '<tr><td>' + a.className + '</td><td>' + a.subject + '</td><td>' + a.teacherName + '</td><td>' + a.teacherEmail + '</td><td>' + a.password + '</td><td>' + (a.activated ? '<span style="color:#4CAF50;">✓ Active</span>' : '<span style="color:#999;">○ Inactive</span>') + '</td><td style="white-space:nowrap;"><button class="btn ' + (a.activated ? 'btn-danger' : 'btn-success') + '" onclick="toggleAssignmentActivation(' + a.id + ')" style="padding: 4px 10px; font-size: 11px; margin-right:5px;">' + (a.activated ? 'Deactivate' : 'Activate') + '</button><button class="btn btn-danger" onclick="removeAssignment(' + a.id + ')" style="padding: 4px 10px; font-size: 11px;">Remove</button></td></tr>';
+      html += '<tr><td>' + a.className + '</td><td>' + a.subject + '</td><td>' + a.teacherName + '</td><td>' + a.teacherEmail + '</td><td>' + (a.activated ? '<span style="color:#4CAF50;">✓ Active</span>' : '<span style="color:#999;">○ Inactive</span>') + '</td><td style="white-space:nowrap;"><button class="btn ' + (a.activated ? 'btn-danger' : 'btn-success') + '" onclick="toggleAssignmentActivation(' + a.id + ')" style="padding: 4px 10px; font-size: 11px; margin-right:5px;">' + (a.activated ? 'Deactivate' : 'Activate') + '</button><button class="btn btn-danger" onclick="removeAssignment(' + a.id + ')" style="padding: 4px 10px; font-size: 11px;">Remove</button></td></tr>';
     });
     html += '</tbody></table></div>';
   }
@@ -1955,19 +1990,36 @@ function renderMasters() {
 
   document.getElementById('mastersTab').innerHTML = html;
 
-  function populateStSubjectOptions() {
-    var armSelect = document.getElementById('newStArm');
+  var availableSupabaseSubjects = [];
+  async function populateStSubjectOptions() {
     var subjSelect = document.getElementById('newStSubject');
-    if (!armSelect || !subjSelect) return;
-    var subj = getSubjectsForClassName(armSelect.value);
-    var options = subj.core.map(function(s) { return '<option value="' + s + '">' + s + '</option>'; }).join('');
-    options += '<option disabled>──── Trade Subjects ────</option>';
-    options += subj.trade.map(function(s) { return '<option value="' + s + '">' + s + '</option>'; }).join('');
-    subjSelect.innerHTML = options;
+    if (!subjSelect) return;
+    subjSelect.innerHTML = '<option value="">Loading active subjects...</option>';
+    subjSelect.disabled = true;
+    if (!supabaseClient || !authenticatedProfile || !authenticatedProfile.school_id) {
+      subjSelect.innerHTML = '<option value="">Supabase school account required</option>';
+      showToast('An authenticated school account is required to load subjects.', 'error');
+      return;
+    }
+    var result = await supabaseClient.from('subjects')
+      .select('id, name, code')
+      .eq('school_id', authenticatedProfile.school_id)
+      .eq('is_active', true)
+      .order('name');
+    if (result.error) {
+      availableSupabaseSubjects = [];
+      subjSelect.innerHTML = '<option value="">Could not load subjects</option>';
+      showToast(result.error.message || 'Could not load active Supabase subjects.', 'error');
+      return;
+    }
+    availableSupabaseSubjects = result.data || [];
+    subjSelect.innerHTML = '<option value="">' + (availableSupabaseSubjects.length ? 'Select an active subject' : 'No active subjects available') + '</option>' +
+      availableSupabaseSubjects.map(function(item) {
+        return '<option value="' + escapeManagementText(item.id) + '">' + escapeManagementText(item.name) + '</option>';
+      }).join('');
+    subjSelect.disabled = availableSupabaseSubjects.length === 0;
   }
   populateStSubjectOptions();
-  var newStArmEl = document.getElementById('newStArm');
-  if (newStArmEl) newStArmEl.addEventListener('change', populateStSubjectOptions);
 
   var addBtn = document.getElementById('addFmBtn');
   if (addBtn) addBtn.addEventListener('click', async function() {
@@ -2043,23 +2095,74 @@ function renderMasters() {
   var addStBtn = document.getElementById('addStBtn');
   if (addStBtn) addStBtn.addEventListener('click', async function() {
     var className = document.getElementById('newStArm').value;
-    var subject = document.getElementById('newStSubject').value;
+    var subjectId = document.getElementById('newStSubject').value;
+    var selectedSubject = availableSupabaseSubjects.find(function(item) { return String(item.id) === String(subjectId); });
     var name = document.getElementById('newStName').value.trim();
     var email = document.getElementById('newStEmail').value.trim();
-    var password = document.getElementById('newStPassword').value;
-    if (!className || !subject || !name || !email || !password) { showToast('Fill all fields', 'error'); return; }
+    var passwordInput = document.getElementById('newStPassword');
+    var password = passwordInput.value;
+    if (!subjectId || !selectedSubject) { showToast('Please select a subject.', 'error'); return; }
+    if (!className || !name || !email || !password) { showToast('Fill all fields', 'error'); return; }
+    var subject = selectedSubject.name;
     if (currentUser.type !== 'admin' || !authenticatedProfile || authenticatedProfile.role !== 'administrator' || authenticatedProfile.is_active !== true) {
       showToast('Only an authenticated active School Administrator can assign Subject Teachers.', 'error'); return;
     }
+    if (!supabaseClient) { showToast('Supabase is not configured. Cannot create a Subject Teacher account.', 'error'); return; }
+    if (!activeAcademicSession || !activeAcademicSession.id) { showToast('No active academic session is available. Select or configure a session first.', 'error'); return; }
+
+    addStBtn.disabled = true;
+    addStBtn.textContent = 'Creating Subject Teacher...';
     try {
       var assignedClass = await resolveSupabaseClass(className);
-      subjectAssignments.push({ id: Date.now(), classId: assignedClass.id, className: assignedClass.class_name, subject: subject, teacherName: name, teacherEmail: email, password: password, activated: false });
+      var result = await supabaseClient.functions.invoke('create-subject-teacher', {
+        body: {
+          school_id: authenticatedProfile.school_id,
+          full_name: name,
+          username: email,
+          email: email,
+          phone: '',
+          password: password,
+          class_id: assignedClass.id,
+          subject_id: subjectId,
+          academic_session_id: activeAcademicSession.id
+        }
+      });
+      if (result.error) {
+        var functionErrorMessage = result.error.message || 'Subject Teacher creation failed.';
+        if (result.error.context && typeof result.error.context.json === 'function') {
+          try {
+            var errorBody = await result.error.context.json();
+            if (errorBody && (errorBody.error || errorBody.message)) functionErrorMessage = errorBody.error || errorBody.message;
+          } catch (responseError) {}
+        }
+        throw new Error(functionErrorMessage);
+      }
+      var functionFailure = result.data && result.data.error;
+      if (!result.data || functionFailure || result.data.success === false) {
+        var responseMessage = functionFailure || (result.data && result.data.message);
+        if (responseMessage && typeof responseMessage === 'object') responseMessage = responseMessage.message || responseMessage.details;
+        throw new Error(responseMessage || 'The Edge Function did not confirm Subject Teacher creation.');
+      }
+
+      subjectAssignments = subjectAssignments.filter(function(item) {
+        return !(String(item.teacherEmail || '').trim().toLowerCase() === email.toLowerCase() &&
+          String(item.className) === String(assignedClass.class_name) && String(item.subject) === String(subject));
+      });
+      subjectAssignments.push({
+        id: Date.now(), classId: assignedClass.id, className: assignedClass.class_name,
+        subjectId: subjectId, subject: subject, teacherName: name,
+        teacherEmail: email, activated: false
+      });
       await saveAllData();
       logActivity('Added subject teacher assignment', assignedClass.class_name + ' / ' + subject + ' / ' + name);
-      showToast('Subject teacher assigned to ' + assignedClass.class_name + '.', 'success');
+      passwordInput.value = '';
+      showToast('Subject Teacher account created and assigned successfully.', 'success');
       renderMasters();
     } catch (error) {
-      showToast(error && error.message ? error.message : 'Could not assign Subject Teacher to this class.', 'error');
+      showToast(error && error.message ? error.message : 'Could not create or assign the Subject Teacher.', 'error');
+    } finally {
+      addStBtn.disabled = false;
+      addStBtn.textContent = 'Add Subject Teacher';
     }
   });
 }
