@@ -1574,11 +1574,81 @@ function renderPortalContentAdmin() {
 }
 
 async function renderDeveloperConsole() {
-  if (currentUser.type !== 'developer') return;
+  if (!currentUser || currentUser.type !== 'developer' || !authenticatedProfile || authenticatedProfile.role !== 'portal_developer' || authenticatedProfile.is_active !== true) return;
   var account = await cloudStorage.globalLoad('portal:developer') || {};
   var expiry = portalSettings.licenseUntil ? new Date(portalSettings.licenseUntil).toLocaleDateString() : 'No expiry set';
-  document.getElementById('developerTab').innerHTML = '<div class="card"><h2>Portal Developer Console</h2><p style="color:#666;margin:8px 0 16px">Developer access and subscription controls are stored in this browser. This standalone portal has no payment processor; record sales and grant access manually.</p><h3>Developer Contact Profile</h3><div class="grid grid-2"><div class="input-group"><label>Name</label><input id="devName" value="' + escapeManagementText(account.name || '') + '"></div><div class="input-group"><label>Email</label><input id="devEmail" type="email" value="' + escapeManagementText(account.email || '') + '"></div><div class="input-group"><label>WhatsApp number (international digits)</label><input id="devWhatsApp" value="' + escapeManagementText(account.whatsapp || '') + '"></div><div class="input-group"><label>Call number</label><input id="devPhone" value="' + escapeManagementText(account.phone || '') + '"></div><div class="input-group"><label>Passport</label><input id="devPhoto" type="file" accept="image/*"></div><div class="input-group"><label>Change developer password (optional)</label><input id="devPassword" type="password" minlength="6"></div></div><button class="btn btn-primary" id="saveDeveloperProfileBtn">Save Contact Profile</button></div>' +
+  var schoolResult = await supabaseClient.from('schools').select('id,name').order('name');
+  var schools = schoolResult.data || [];
+  var schoolOptions = '<option value="">Select a school</option>' + schools.map(function(school) { return '<option value="' + escapeManagementText(school.id) + '">' + escapeManagementText(school.name) + '</option>'; }).join('');
+  var schoolLoadMessage = schoolResult.error ? '<p class="alert alert-error">Could not load schools: ' + escapeManagementText(schoolResult.error.message || 'Supabase denied access to the schools list.') + '</p>' : '';
+  var administratorCreationHtml = '<div class="card"><h3>Create School Administrator</h3><p style="color:#666;margin:8px 0 16px">Create an administrator account for a school. Passwords are sent securely to the Edge Function and are not saved by this page.</p>' + schoolLoadMessage + '<div class="grid grid-2"><div class="input-group"><label for="newAdminSchool">School *</label><select id="newAdminSchool" required>' + schoolOptions + '</select></div><div class="input-group"><label for="newAdminFullName">Full Name *</label><input id="newAdminFullName" type="text" autocomplete="name" required></div><div class="input-group"><label for="newAdminUsername">Username *</label><input id="newAdminUsername" type="text" autocomplete="username" required></div><div class="input-group"><label for="newAdminEmail">Email *</label><input id="newAdminEmail" type="email" autocomplete="email" required></div><div class="input-group"><label for="newAdminPhone">Phone</label><input id="newAdminPhone" type="tel" autocomplete="tel"></div><div class="input-group"><label for="newAdminPassword">Password *</label><input id="newAdminPassword" type="password" autocomplete="new-password" minlength="8" required></div><div class="input-group"><label for="newAdminConfirmPassword">Confirm Password *</label><input id="newAdminConfirmPassword" type="password" autocomplete="new-password" minlength="8" required></div></div><button class="btn btn-success" id="createSchoolAdministratorBtn"' + (schoolResult.error || schools.length === 0 ? ' disabled' : '') + '>Create Administrator</button><div id="createSchoolAdministratorStatus" role="status" aria-live="polite" style="margin-top:12px"></div></div>';
+  document.getElementById('developerTab').innerHTML = '<div class="card"><h2>Portal Developer Console</h2><p style="color:#666;margin:8px 0 16px">Developer access and subscription controls are stored in this browser. This standalone portal has no payment processor; record sales and grant access manually.</p><h3>Developer Contact Profile</h3><div class="grid grid-2"><div class="input-group"><label>Name</label><input id="devName" value="' + escapeManagementText(account.name || '') + '"></div><div class="input-group"><label>Email</label><input id="devEmail" type="email" value="' + escapeManagementText(account.email || '') + '"></div><div class="input-group"><label>WhatsApp number (international digits)</label><input id="devWhatsApp" value="' + escapeManagementText(account.whatsapp || '') + '"></div><div class="input-group"><label>Call number</label><input id="devPhone" value="' + escapeManagementText(account.phone || '') + '"></div><div class="input-group"><label>Passport</label><input id="devPhoto" type="file" accept="image/*"></div><div class="input-group"><label>Change developer password (optional)</label><input id="devPassword" type="password" minlength="6"></div></div><button class="btn btn-primary" id="saveDeveloperProfileBtn">Save Contact Profile</button></div>' + administratorCreationHtml +
     '<div class="card"><h3>Portal Access &amp; Time Sales</h3><p>Portal: <strong>' + (portalSettings.portalEnabled === false ? 'OFF' : 'ON') + '</strong> · Access expiry: <strong>' + expiry + '</strong></p><div class="input-group"><label>Sell / grant access for how many days?</label><input id="licenseDays" type="number" min="1" value="30"></div><div class="input-group"><label>Customer / recipient name</label><input id="licenseCustomer" placeholder="School admin or user"></div><button class="btn btn-success" id="grantLicenseBtn">Record Sale &amp; Extend Access</button> <button class="btn ' + (portalSettings.portalEnabled === false ? 'btn-success' : 'btn-danger') + '" id="togglePortalBtn">Turn Portal ' + (portalSettings.portalEnabled === false ? 'ON' : 'OFF') + '</button><div style="margin-top:16px"><h4>Sales history</h4>' + ((portalSettings.sales || []).slice().reverse().map(function(sale) { return '<p style="padding:6px;border-bottom:1px solid #eee">' + escapeManagementText(sale.customer) + ' — ' + escapeManagementText(sale.days) + ' days — ' + escapeManagementText(new Date(sale.date).toLocaleDateString()) + '</p>'; }).join('') || '<p>No sales recorded.</p>') + '</div></div>';
+  var createAdministratorBtn = document.getElementById('createSchoolAdministratorBtn');
+  createAdministratorBtn.addEventListener('click', async function() {
+    var schoolId = document.getElementById('newAdminSchool').value;
+    var fullName = document.getElementById('newAdminFullName').value.trim();
+    var username = document.getElementById('newAdminUsername').value.trim();
+    var email = document.getElementById('newAdminEmail').value.trim();
+    var phone = document.getElementById('newAdminPhone').value.trim();
+    var password = document.getElementById('newAdminPassword').value;
+    var confirmPassword = document.getElementById('newAdminConfirmPassword').value;
+    var status = document.getElementById('createSchoolAdministratorStatus');
+    status.className = '';
+    status.textContent = '';
+    if (!schoolId || !fullName || !username || !email || !password || !confirmPassword) {
+      status.className = 'alert alert-error';
+      status.textContent = 'Complete all required fields before creating the administrator.';
+      showToast(status.textContent, 'error');
+      return;
+    }
+    if (password.length < 8) {
+      status.className = 'alert alert-error';
+      status.textContent = 'Password must contain at least 8 characters.';
+      showToast(status.textContent, 'error');
+      return;
+    }
+    if (password !== confirmPassword) {
+      status.className = 'alert alert-error';
+      status.textContent = 'Confirm Password must match Password.';
+      showToast(status.textContent, 'error');
+      return;
+    }
+
+    createAdministratorBtn.disabled = true;
+    createAdministratorBtn.textContent = 'Creating...';
+    try {
+      var result = await supabaseClient.functions.invoke('create-school-administrator', {
+        body: { school_id: schoolId, full_name: fullName, username: username, email: email, phone: phone, password: password }
+      });
+      if (result.error) {
+        var functionErrorMessage = result.error.message || 'Administrator creation failed.';
+        if (result.error.context && typeof result.error.context.json === 'function') {
+          try {
+            var errorBody = await result.error.context.json();
+            if (errorBody && errorBody.error) functionErrorMessage = errorBody.error;
+          } catch (responseError) {}
+        }
+        throw new Error(functionErrorMessage);
+      }
+      if (!result.data || result.data.success !== true) {
+        throw new Error(result.data && result.data.error ? result.data.error : 'The Edge Function did not confirm administrator creation.');
+      }
+      status.className = 'alert alert-success';
+      status.textContent = result.data.message || 'School Administrator created successfully.';
+      document.getElementById('newAdminPassword').value = '';
+      document.getElementById('newAdminConfirmPassword').value = '';
+      showToast(status.textContent, 'success');
+    } catch (error) {
+      status.className = 'alert alert-error';
+      status.textContent = error && error.message ? error.message : 'Unable to create the School Administrator.';
+      showToast(status.textContent, 'error');
+    } finally {
+      createAdministratorBtn.disabled = false;
+      createAdministratorBtn.textContent = 'Create Administrator';
+    }
+  });
+
   document.getElementById('saveDeveloperProfileBtn').addEventListener('click', async function() { account.name = document.getElementById('devName').value.trim() || 'Portal Developer'; account.email = document.getElementById('devEmail').value.trim(); account.whatsapp = document.getElementById('devWhatsApp').value.trim(); account.phone = document.getElementById('devPhone').value.trim(); var password = document.getElementById('devPassword').value; if (password && password.length < 6) { showToast('Password must be at least 6 characters', 'error'); return; } if (password) account.password = password; var file = document.getElementById('devPhoto').files[0]; var save = async function(photo) { if (photo) account.photo = photo; await cloudStorage.globalSave('portal:developer', account); currentUser.name = account.name; document.getElementById('currentUserName').textContent = currentUser.name; showToast('Developer profile saved', 'success'); renderDeveloperConsole(); }; if (file) { if (file.type.indexOf('image/') !== 0) { showToast('Choose a valid image', 'error'); return; } var reader = new FileReader(); reader.onload = function(event) { save(event.target.result); }; reader.readAsDataURL(file); } else save(null); });
   document.getElementById('grantLicenseBtn').addEventListener('click', async function() { var days = parseInt(document.getElementById('licenseDays').value, 10), customer = document.getElementById('licenseCustomer').value.trim(); if (!days || days < 1 || !customer) { showToast('Enter recipient name and valid days', 'error'); return; } var start = Math.max(Date.now(), Number(portalSettings.licenseUntil) || 0); portalSettings.licenseUntil = start + days * 86400000; portalSettings.sales = portalSettings.sales || []; portalSettings.sales.push({ customer: customer, days: days, date: Date.now() }); await saveAllData(); showToast('Access extended for ' + days + ' days', 'success'); renderDeveloperConsole(); });
   document.getElementById('togglePortalBtn').addEventListener('click', async function() { portalSettings.portalEnabled = portalSettings.portalEnabled === false; await saveAllData(); showToast('Portal turned ' + (portalSettings.portalEnabled ? 'on' : 'off'), 'info'); renderDeveloperConsole(); });
