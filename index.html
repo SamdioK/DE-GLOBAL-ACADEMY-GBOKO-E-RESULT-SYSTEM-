@@ -540,6 +540,20 @@ async function loadArmDropdown() {
   }
 }
 
+async function resolveSupabaseClass(className) {
+  if (!supabaseClient || !authenticatedProfile || !authenticatedProfile.school_id) {
+    throw new Error('An authenticated Supabase school account is required to look up this class.');
+  }
+  var result = await supabaseClient.from('classes')
+    .select('id, class_name')
+    .eq('school_id', authenticatedProfile.school_id)
+    .eq('class_name', className)
+    .maybeSingle();
+  if (result.error) throw result.error;
+  if (!result.data) throw new Error('Class arm "' + className + '" was not found in the Supabase classes table.');
+  return result.data;
+}
+
 async function loadAssignmentDropdown() {
   var select = document.getElementById('selectedAssignment');
   select.innerHTML = '<option value="">Loading...</option>';
@@ -619,7 +633,10 @@ async function handleSupabaseLogin(userType, errorDiv) {
       var assignmentId = document.getElementById('selectedAssignment').value;
       var assignment = subjectAssignments.find(function(item) { return String(item.id) === String(assignmentId); });
       if (!assignment) throw new Error('Select an assigned class and subject.');
-      currentUser.arm = assignment.className; currentUser.subject = assignment.subject;
+      var assignedClass = await resolveSupabaseClass(assignment.className);
+      assignment.classId = assignedClass.id;
+      assignment.className = assignedClass.class_name;
+      currentUser.arm = assignedClass.class_name; currentUser.subject = assignment.subject;
     }
     if (appType === 'student') currentUser.admission = document.getElementById('studentAdmission').value.trim();
     if (appType === 'subadmin') {
@@ -706,24 +723,8 @@ async function handleLogin() {
       errorDiv.textContent = 'Invalid credentials'; errorDiv.classList.remove('hidden');
     }
   } else if (userType === 'formmaster') {
-    var armName = document.getElementById('selectedArm').value;
-    var pw = document.getElementById('armPassword').value;
-    if (!armName || !pw) { errorDiv.textContent = 'Please fill all fields'; errorDiv.classList.remove('hidden'); return; }
-
-    currentSchool = school;
-    cloudStorage.setSchoolId('MAIN');
-    await loadSchoolData();
-
-    var arm = classArms.find(function(a) { return a.name === armName; });
-    if (!arm || !arm.activated) { errorDiv.textContent = 'This class is not activated. Contact admin.'; errorDiv.classList.remove('hidden'); return; }
-
-    var fm = formMasters.find(function(f) { return f.name === arm.formMaster && f.password === pw; });
-    if (fm) {
-      currentUser = { type: 'formmaster', name: arm.formMaster, arm: armName };
-      showApp();
-    } else {
-      errorDiv.textContent = 'Invalid password'; errorDiv.classList.remove('hidden');
-    }
+    errorDiv.textContent = 'Form Master sign-in requires Supabase authentication.';
+    errorDiv.classList.remove('hidden');
   } else if (userType === 'subjectteacher') {
     var assignmentId = document.getElementById('selectedAssignment').value;
     var stPw = document.getElementById('assignmentPassword').value;
@@ -812,6 +813,18 @@ async function handleLogout() {
 }
 
 // ===================== DATA LOAD / SAVE =====================
+function removeFormMasterPasswords() {
+  var removed = false;
+  if (!Array.isArray(formMasters)) formMasters = [];
+  formMasters.forEach(function(master) {
+    if (master && Object.prototype.hasOwnProperty.call(master, 'password')) {
+      delete master.password;
+      removed = true;
+    }
+  });
+  return removed;
+}
+
 async function loadSchoolData() {
   var loadedArms = await cloudStorage.load('classArms');
   var loadedMasters = await cloudStorage.load('formMasters');
@@ -829,7 +842,8 @@ async function loadSchoolData() {
   var loadedPortalSettings = await cloudStorage.load('portalSettings');
 
   if (loadedArms) classArms = loadedArms; else generateArms();
-  if (loadedMasters) formMasters = loadedMasters;
+  if (loadedMasters) formMasters = Array.isArray(loadedMasters) ? loadedMasters : [];
+  var removedLegacyFormMasterPasswords = removeFormMasterPasswords();
   if (loadedAssignments) subjectAssignments = loadedAssignments; else subjectAssignments = [];
   assessmentConfig = {};
   managementStaff = Array.isArray(loadedManagementStaff) ? loadedManagementStaff : [];
@@ -868,7 +882,7 @@ async function loadSchoolData() {
     schoolInfo = { name: currentSchool.schoolName, address: currentSchool.address || '', email: currentSchool.email, phone: currentSchool.phone, session: currentSchool.session, principalName: currentSchool.principalName, logo: currentSchool.logo || '', principalSignature: currentSchool.principalSignature || '', principalComment: currentSchool.principalComment || '' };
   }
 
-  var migrated = migrateOldClassNames();
+  var migrated = migrateOldClassNames() || removedLegacyFormMasterPasswords;
   if (syncStaffDatabaseFromExistingRecords()) migrated = true;
   if (!Array.isArray(loadedPortalStaffSelections)) {
     portalStaffSelections = staffDatabase.filter(function(record) { return record.showOnPortal === true; }).map(function(record) {
@@ -987,6 +1001,7 @@ async function loadSupabaseAssessmentConfigurations(sessionId, termId) {
 
 async function saveAllData() {
   try {
+    removeFormMasterPasswords();
     var promises = [];
     promises.push(cloudStorage.save('classArms', classArms));
     promises.push(cloudStorage.save('formMasters', formMasters));
@@ -1901,12 +1916,12 @@ function renderMasters() {
   html += '<input type="text" id="newFmName" placeholder="Form Master Name" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">';
   html += '<input type="email" id="newFmEmail" placeholder="Email" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">';
   html += '<input type="password" id="newFmPassword" placeholder="Password" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">';
-  html += '</div><button class="btn btn-success" id="addFmBtn" style="margin-top: 10px;">Add &amp; Assign Form Master</button></div><table><thead><tr><th>Class Arm</th><th>Name</th><th>Email</th><th>Password</th><th>Status</th><th>Action</th></tr></thead><tbody>';
+  html += '</div><button class="btn btn-success" id="addFmBtn" style="margin-top: 10px;">Add &amp; Assign Form Master</button></div><table><thead><tr><th>Class Arm</th><th>Name</th><th>Email</th><th>Status</th><th>Action</th></tr></thead><tbody>';
   formMasters.forEach(function(fm) {
     var assigned = classArms.find(function(a) { return a.formMaster === fm.name; });
     var armName = assigned ? assigned.name : '';
     var isActivated = assigned ? assigned.activated === true : false;
-    html += '<tr><td>' + (assigned ? assigned.name : '<span style="color:#f44336;">⚠ Unassigned</span>') + '</td><td>' + fm.name + '</td><td>' + fm.email + '</td><td>' + fm.password + '</td><td>' + (isActivated ? '<span style="color:#4CAF50;">✓ Active</span>' : '<span style="color:#999;">○ Inactive</span>') + '</td><td style="white-space:nowrap;">';
+    html += '<tr><td>' + (assigned ? assigned.name : '<span style="color:#f44336;">⚠ Unassigned</span>') + '</td><td>' + fm.name + '</td><td>' + fm.email + '</td><td>' + (isActivated ? '<span style="color:#4CAF50;">✓ Active</span>' : '<span style="color:#999;">○ Inactive</span>') + '</td><td style="white-space:nowrap;">';
     if (assigned) {
       html += '<button class="btn ' + (isActivated ? 'btn-danger' : 'btn-success') + '" onclick="if(window.toggleClassActivationMasters){toggleClassActivationMasters(\'' + armName + '\');}else{alert(\'Please fully refresh the page to load the latest version.\');}" style="padding: 4px 10px; font-size: 11px; margin-right:5px;">' + (isActivated ? 'Deactivate' : 'Activate') + '</button>';
     } else {
@@ -1959,18 +1974,70 @@ function renderMasters() {
     var armName = document.getElementById('newFmArm').value;
     var name = document.getElementById('newFmName').value.trim();
     var email = document.getElementById('newFmEmail').value.trim();
-    var password = document.getElementById('newFmPassword').value;
+    var passwordInput = document.getElementById('newFmPassword');
+    var password = passwordInput.value;
     if (!armName || !name || !email || !password) { showToast('Fill all fields', 'error'); return; }
+    if (currentUser.type !== 'admin' || !authenticatedProfile || authenticatedProfile.role !== 'administrator' || authenticatedProfile.is_active !== true) {
+      showToast('Only an authenticated active School Administrator can create Form Masters.', 'error'); return;
+    }
+    if (!supabaseClient) { showToast('Supabase is not configured. Cannot create a Form Master account.', 'error'); return; }
+    if (!activeAcademicSession || !activeAcademicSession.id) { showToast('No active academic session is available. Select or configure a session first.', 'error'); return; }
 
-    formMasters.push({ id: Date.now(), name: name, email: email, password: password });
+    addBtn.disabled = true;
+    addBtn.textContent = 'Creating Form Master...';
+    try {
+      var classResult = await supabaseClient.from('classes').select('id, class_name')
+        .eq('school_id', authenticatedProfile.school_id).eq('class_name', armName).maybeSingle();
+      if (classResult.error) throw classResult.error;
+      if (!classResult.data || !classResult.data.id) throw new Error('The selected class arm was not found for this school.');
 
-    var arm = classArms.find(function(a) { return a.name === armName; });
-    if (arm) { arm.formMaster = name; arm.formMasterEmail = email; }
+      var result = await supabaseClient.functions.invoke('create-form-master', {
+        body: {
+          school_id: authenticatedProfile.school_id,
+          full_name: name,
+          username: email,
+          email: email,
+          phone: '',
+          password: password,
+          class_id: classResult.data.id,
+          academic_session_id: activeAcademicSession.id
+        }
+      });
+      if (result.error) {
+        var functionErrorMessage = result.error.message || 'Form Master creation failed.';
+        if (result.error.context && typeof result.error.context.json === 'function') {
+          try {
+            var errorBody = await result.error.context.json();
+            if (errorBody && (errorBody.error || errorBody.message)) functionErrorMessage = errorBody.error || errorBody.message;
+          } catch (responseError) {}
+        }
+        throw new Error(functionErrorMessage);
+      }
+      if (result.data && (result.data.error || result.data.success === false)) {
+        throw new Error(result.data.error || result.data.message || 'Form Master creation failed.');
+      }
 
-    await saveAllData();
-    logActivity('Added / assigned form master', name + ' / ' + armName);
-    showToast('Form Master added and assigned to ' + armName + '!', 'success');
-    renderMasters();
+      passwordInput.value = '';
+      var arm = classArms.find(function(item) { return item.name === armName; });
+      if (arm) { arm.formMaster = name; arm.formMasterEmail = email; }
+      var localMaster = formMasters.find(function(item) { return item.email === email; });
+      if (localMaster) {
+        delete localMaster.password;
+        localMaster.name = name;
+        localMaster.email = email;
+      } else {
+        formMasters.push({ id: Date.now(), name: name, email: email });
+      }
+      await saveAllData();
+      logActivity('Added / assigned form master', name + ' / ' + armName);
+      showToast('Form Master account created and assigned to ' + armName + '.', 'success');
+      renderMasters();
+    } catch (error) {
+      showToast(error && error.message ? error.message : 'Form Master creation failed.', 'error');
+    } finally {
+      addBtn.disabled = false;
+      addBtn.textContent = 'Add & Assign Form Master';
+    }
   });
 
   var addStBtn = document.getElementById('addStBtn');
@@ -1981,11 +2048,19 @@ function renderMasters() {
     var email = document.getElementById('newStEmail').value.trim();
     var password = document.getElementById('newStPassword').value;
     if (!className || !subject || !name || !email || !password) { showToast('Fill all fields', 'error'); return; }
-    subjectAssignments.push({ id: Date.now(), className: className, subject: subject, teacherName: name, teacherEmail: email, password: password, activated: false });
-    await saveAllData();
-    logActivity('Added subject teacher assignment', className + ' / ' + subject + ' / ' + name);
-    showToast('Subject teacher added!', 'success');
-    renderMasters();
+    if (currentUser.type !== 'admin' || !authenticatedProfile || authenticatedProfile.role !== 'administrator' || authenticatedProfile.is_active !== true) {
+      showToast('Only an authenticated active School Administrator can assign Subject Teachers.', 'error'); return;
+    }
+    try {
+      var assignedClass = await resolveSupabaseClass(className);
+      subjectAssignments.push({ id: Date.now(), classId: assignedClass.id, className: assignedClass.class_name, subject: subject, teacherName: name, teacherEmail: email, password: password, activated: false });
+      await saveAllData();
+      logActivity('Added subject teacher assignment', assignedClass.class_name + ' / ' + subject + ' / ' + name);
+      showToast('Subject teacher assigned to ' + assignedClass.class_name + '.', 'success');
+      renderMasters();
+    } catch (error) {
+      showToast(error && error.message ? error.message : 'Could not assign Subject Teacher to this class.', 'error');
+    }
   });
 }
 
