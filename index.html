@@ -211,6 +211,7 @@ th { background: #f5f5f5; font-weight: 600; }
     <div id="inputTab" class="hidden"></div>
     <div id="computeTab" class="hidden"></div>
     <div id="viewTab" class="hidden"></div>
+    <div id="studentDatabaseTab" class="hidden"></div>
     <div id="printTab" class="hidden"></div>
     <div id="managementTab" class="hidden"></div>
     <div id="staffDatabaseTab" class="hidden"></div>
@@ -1090,7 +1091,7 @@ function showApp() {
 
   var tabs;
   if (currentUser.type === 'admin') {
-    tabs = ['dashboard', 'arms', 'masters', 'school', 'profile', 'assessment', 'teacherSignatures', 'management', 'staffDatabase', 'userManagement', 'release', 'view', 'compute', 'print', 'portalContent'];
+    tabs = ['dashboard', 'arms', 'masters', 'school', 'profile', 'assessment', 'teacherSignatures', 'management', 'staffDatabase', 'studentDatabase', 'userManagement', 'release', 'view', 'compute', 'print', 'portalContent'];
   } else if (currentUser.type === 'subadmin') {
     tabs = [];
     if (hasSubAdminPermission('enterResults') || hasSubAdminPermission('editResults')) tabs.push('input');
@@ -1106,6 +1107,8 @@ function showApp() {
     tabs = ['studentResults'];
   } else if (currentUser.type === 'developer') {
     tabs = ['developer'];
+  } else if (currentUser.type === 'formmaster') {
+    tabs = ['studentDatabase', 'input', 'view'];
   } else {
     tabs = ['input', 'view'];
   }
@@ -1116,7 +1119,7 @@ function showApp() {
     var btn = document.createElement('button');
     btn.className = 'tab';
     if (idx === 0) btn.classList.add('active');
-    var tabLabels = { profile: 'Admin Profile', teacherSignatures: "Teachers' Signature", management: 'Management Staff', staffDatabase: 'Staff Database', userManagement: 'User Management', release: 'Release Results', studentResults: 'Student Results', portalContent: 'Portal Options', developer: 'Developer Console' };
+    var tabLabels = { profile: 'Admin Profile', teacherSignatures: "Teachers' Signature", management: 'Management Staff', staffDatabase: 'Staff Database', studentDatabase: 'Student Database', userManagement: 'User Management', release: 'Release Results', studentResults: 'Student Results', portalContent: 'Portal Options', developer: 'Developer Console' };
     btn.textContent = tabLabels[tab] || tab.charAt(0).toUpperCase() + tab.slice(1);
     btn.addEventListener('click', function() {
       document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
@@ -1132,7 +1135,7 @@ function showTab(tabName) {
   var requiredPermission = { input: 'enterResults', view: 'manageStudents', masters: 'manageTeachers', school: 'manageSchool', management: 'manageBoard', userManagement: 'createAdmins', release: 'publishResults', print: 'generateSheets' };
   if (currentUser && currentUser.type === 'subadmin' && (!requiredPermission[tabName] || (!hasSubAdminPermission(requiredPermission[tabName]) && !(tabName === 'input' && hasSubAdminPermission('editResults'))))) return;
   if (currentUser && currentUser.type === 'student' && tabName !== 'studentResults') return;
-  ['dashboard', 'arms', 'masters', 'school', 'profile', 'assessment', 'teacherSignatures', 'management', 'staffDatabase', 'input', 'compute', 'view', 'print', 'userManagement', 'release', 'studentResults', 'portalContent', 'developer'].forEach(function(t) {
+  ['dashboard', 'arms', 'masters', 'school', 'profile', 'assessment', 'teacherSignatures', 'management', 'staffDatabase', 'studentDatabase', 'input', 'compute', 'view', 'print', 'userManagement', 'release', 'studentResults', 'portalContent', 'developer'].forEach(function(t) {
     document.getElementById(t + 'Tab').classList.add('hidden');
   });
   document.getElementById(tabName + 'Tab').classList.remove('hidden');
@@ -1148,6 +1151,7 @@ function showTab(tabName) {
   else if (tabName === 'input') renderInput();
   else if (tabName === 'compute') renderCompute();
   else if (tabName === 'view') renderView();
+  else if (tabName === 'studentDatabase') renderStudentDatabase();
   else if (tabName === 'print') renderPrint();
   else if (tabName === 'userManagement') renderUserManagement();
   else if (tabName === 'release') renderReleaseResults();
@@ -1349,6 +1353,574 @@ function renderStudentResults() {
     var finalSummary = '<p style="margin-top:14px;"><strong>Attendance:</strong> ' + Number(student.attendanceDays || 0) + ' out of ' + Number(student.schoolDays || ((Number(portalSettings.termWeeks) || 12) * 5)) + ' school days</p><div style="display:grid;grid-template-columns:1fr 1fr;border:1px solid #333;margin-top:8px;"><div style="padding:8px;border-right:1px solid #333;"><strong>Next Term School Fees</strong></div><div style="padding:8px;">' + escapeManagementText(feesAmount) + '</div></div>' + (stage >= 4 ? '<p><strong>Average:</strong> ' + Number(student.averageScore || 0).toFixed(1) + '% &nbsp; <strong>Position:</strong> ' + getOrdinalPosition(student.position) + ' out of ' + (student.positionOf || '-') + ' Candidates</p>' : '');
     return '<div class="card"><h2>' + escapeManagementText(schoolInfo.name || currentSchool.schoolName) + ' — Student Result</h2><p style="margin:12px 0;"><strong>Student:</strong> ' + escapeManagementText(student.studentName) + ' &nbsp; <strong>Admission No:</strong> ' + escapeManagementText(student.admNo) + ' &nbsp; <strong>Class:</strong> ' + escapeManagementText(student.className) + ' &nbsp; <strong>Term:</strong> ' + escapeManagementText(student.term) + ' &nbsp; <strong>Session:</strong> ' + escapeManagementText(student.session || schoolInfo.session || '') + '</p><p style="margin-bottom:10px; color:#5568d3;"><strong>Released through:</strong> ' + getReleaseStageLabel(stage) + '</p><div style="overflow-x:auto;"><table><thead><tr>' + headers + '</tr></thead><tbody>' + rows + '</tbody></table></div>' + finalSummary + '</div>';
   }).join('');
+}
+
+// ===================== SUPABASE STUDENT DATABASE =====================
+var studentDbState = { classes: [], assignedClasses: [], official: [], pending: [], requests: [], importRows: [], activeClassId: '', view: 'official', draftRows: [], existingStudentSearchResults: [], selectedExistingStudentId: '' };
+
+function studentDbError(error, fallback) {
+  console.error('Student Database:', error);
+  showToast(fallback, 'error');
+}
+
+function studentDbName(student) {
+  if (student && student.full_name) return studentDbClean(student.full_name);
+  return [student && student.first_name, student && student.middle_name, student && student.last_name].filter(Boolean).join(' ');
+}
+
+function studentDbClean(value) {
+  return String(value == null ? '' : value).trim().replace(/\s+/g, ' ');
+}
+
+function studentDbDate(value) {
+  if (!value) return '';
+  var date = new Date(value);
+  return isNaN(date.getTime()) ? String(value) : date.toLocaleDateString();
+}
+
+function studentDbClassLabel(classId) {
+  var item = studentDbState.classes.find(function(record) { return String(record.id) === String(classId); });
+  return item ? item.class_name : 'Class unavailable';
+}
+
+function studentDbStatusBadge(status) {
+  var value = String(status || 'pending').toLowerCase();
+  var colors = { pending: '#fff3cd;color:#856404', approved: '#d4edda;color:#155724', partially_approved: '#d1ecf1;color:#0c5460', rejected: '#f8d7da;color:#721c24' };
+  var label = value.replace(/_/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+  return '<span style="display:inline-block;padding:4px 8px;border-radius:12px;background:' + (colors[value] || '#eee;color:#444') + ';font-size:12px">' + escapeManagementText(label) + '</span>';
+}
+
+async function loadStudentDatabase() {
+  if (!supabaseClient || !authenticatedProfile || !authenticatedProfile.school_id || !activeAcademicSession) throw new Error('An authenticated account and active academic session are required.');
+  var classesResult = await supabaseClient.from('classes').select('id,class_name').eq('school_id', authenticatedProfile.school_id).order('class_name');
+  if (classesResult.error) throw classesResult.error;
+  studentDbState.classes = classesResult.data || [];
+  if (currentUser.type === 'formmaster') {
+    var assignmentResult = await supabaseClient.from('form_master_assignments').select('class_id')
+      .eq('school_id', authenticatedProfile.school_id)
+      .eq('academic_session_id', activeAcademicSession.id)
+      .eq('teacher_id', authenticatedProfile.id);
+    if (assignmentResult.error) throw assignmentResult.error;
+    var myAssignments = assignmentResult.data || [];
+    var classIds = myAssignments.map(function(row) { return row.class_id; }).filter(Boolean);
+    studentDbState.assignedClasses = studentDbState.classes.filter(function(item) { return classIds.some(function(id) { return String(id) === String(item.id); }); });
+  } else {
+    studentDbState.assignedClasses = studentDbState.classes.slice();
+  }
+  if (!studentDbState.assignedClasses.some(function(item) { return String(item.id) === String(studentDbState.activeClassId); })) {
+    studentDbState.activeClassId = studentDbState.assignedClasses.length ? studentDbState.assignedClasses[0].id : '';
+  }
+}
+
+async function loadOfficialStudents(classId) {
+  if (!classId) { studentDbState.official = []; return; }
+  var enrolmentsResult = await supabaseClient.from('student_enrolments').select('*')
+    .eq('school_id', authenticatedProfile.school_id).eq('academic_session_id', activeAcademicSession.id).eq('class_id', classId).order('register_number');
+  if (enrolmentsResult.error) throw enrolmentsResult.error;
+  var enrolments = enrolmentsResult.data || [];
+  var ids = enrolments.map(function(item) { return item.student_id; }).filter(Boolean);
+  if (!ids.length) { studentDbState.official = []; return; }
+  var studentsResult = await supabaseClient.from('students').select('*').eq('school_id', authenticatedProfile.school_id).in('id', ids);
+  if (studentsResult.error) throw studentsResult.error;
+  var byId = {};
+  (studentsResult.data || []).forEach(function(student) { byId[String(student.id)] = student; });
+  studentDbState.official = enrolments.map(function(enrolment) {
+    return { enrolment: enrolment, student: byId[String(enrolment.student_id)] };
+  }).filter(function(item) { return !!item.student; });
+}
+
+async function loadPendingStudentApprovals() {
+  var batches = await supabaseClient.from('student_import_batches').select('*').eq('school_id', authenticatedProfile.school_id).eq('academic_session_id', activeAcademicSession.id);
+  if (batches.error) throw batches.error;
+  var batchMap = {};
+  (batches.data || []).forEach(function(batch) { batchMap[String(batch.id)] = batch; });
+  var batchIds = Object.keys(batchMap);
+  if (!batchIds.length) { studentDbState.pending = []; return; }
+  var result = await supabaseClient.from('student_import_rows').select('*').in('batch_id', batchIds).eq('status', 'pending').order('created_at', { ascending: true });
+  if (result.error) throw result.error;
+  var submitterIds = (batches.data || []).map(function(batch) { return batch.submitted_by; }).filter(function(id, index, list) { return id && list.indexOf(id) === index; });
+  var submitterNames = {};
+  if (submitterIds.length) {
+    var profilesResult = await supabaseClient.from('profiles').select('id,full_name').in('id', submitterIds);
+    if (profilesResult.error) console.error('Could not load submitter names:', profilesResult.error);
+    else (profilesResult.data || []).forEach(function(profile) { submitterNames[String(profile.id)] = profile.full_name; });
+  }
+  studentDbState.pending = (result.data || []).map(function(row) { var batch = batchMap[String(row.batch_id)] || {}; var submitterId = row.submitted_by || batch.submitted_by; return Object.assign({}, row, { class_id: row.class_id || batch.class_id, submitted_by: submitterNames[String(submitterId)] || submitterId, submission_type: row.submission_type || batch.submission_type }); });
+}
+
+async function loadStudentChangeRequests() {
+  var result = await supabaseClient.from('student_change_requests').select('*').eq('school_id', authenticatedProfile.school_id).order('created_at', { ascending: false });
+  if (result.error) throw result.error;
+  studentDbState.requests = result.data || [];
+}
+
+async function loadFormMasterSubmissions() {
+  var batches = await supabaseClient.from('student_import_batches').select('*').eq('school_id', authenticatedProfile.school_id).eq('academic_session_id', activeAcademicSession.id).eq('submitted_by', authenticatedProfile.id).order('created_at', { ascending: false });
+  if (batches.error) throw batches.error;
+  var batchMap = {};
+  (batches.data || []).forEach(function(batch) { batchMap[String(batch.id)] = batch; });
+  var ids = Object.keys(batchMap);
+  if (!ids.length) { studentDbState.importRows = []; return; }
+  var result = await supabaseClient.from('student_import_rows').select('*').in('batch_id', ids).order('created_at', { ascending: false });
+  if (result.error) throw result.error;
+  studentDbState.importRows = (result.data || []).map(function(row) { var batch = batchMap[String(row.batch_id)] || {}; return Object.assign({}, row, { class_id: row.class_id || batch.class_id, submission_type: row.submission_type || batch.submission_type }); });
+}
+
+function studentDbClassOptions() {
+  return studentDbState.assignedClasses.map(function(item) {
+    return '<option value="' + escapeManagementText(item.id) + '"' + (String(item.id) === String(studentDbState.activeClassId) ? ' selected' : '') + '>' + escapeManagementText(item.class_name) + '</option>';
+  }).join('');
+}
+
+function renderStudentDatabase() {
+  var container = document.getElementById('studentDatabaseTab');
+  if (!container || !currentUser || !['admin', 'formmaster'].includes(currentUser.type)) return;
+  container.innerHTML = '<div class="card"><h2>Student Database</h2><p id="studentDbLoading" class="alert alert-info">Loading classes and student records…</p><div id="studentDbWorkspace"></div></div>';
+  loadStudentDatabase().then(async function() {
+    if (currentUser.type === 'admin') {
+      await Promise.all([loadPendingStudentApprovals(), loadStudentChangeRequests()]);
+    } else {
+      await loadFormMasterSubmissions();
+    }
+    if (studentDbState.activeClassId) await loadOfficialStudents(studentDbState.activeClassId);
+    renderStudentDatabaseWorkspace();
+  }).catch(function(error) {
+    console.error('Student Database load failed:', error);
+    var loading = document.getElementById('studentDbLoading');
+    if (loading) { loading.className = 'alert alert-error'; loading.textContent = 'Unable to load the Student Database. Check your access and try again.'; }
+  });
+}
+
+function renderStudentDatabaseWorkspace() {
+  var workspace = document.getElementById('studentDbWorkspace');
+  if (!workspace) return;
+  var isAdmin = currentUser.type === 'admin';
+  var tabs = isAdmin ? ['official', 'pending', 'requests', 'enrolExisting'] : ['official', 'submit', 'submissions', 'corrections'];
+  var titles = { official: 'Official Students', pending: 'Pending Approvals', requests: 'Change Requests', enrolExisting: 'Enrol Existing Student', submit: 'Add / Upload Students', submissions: 'My Submissions', corrections: 'Request Correction' };
+  if (tabs.indexOf(studentDbState.view) === -1) studentDbState.view = tabs[0];
+  var html = '<p style="margin:4px 0 12px;color:#555"><strong>Academic Session:</strong> ' + escapeManagementText(activeAcademicSession.name) + '</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">' + tabs.map(function(tab) {
+    return '<button class="btn ' + (studentDbState.view === tab ? 'btn-primary' : '') + ' student-db-tab" data-view="' + tab + '" style="' + (studentDbState.view !== tab ? 'background:#eee' : '') + '">' + titles[tab] + '</button>';
+  }).join('') + '</div>';
+  html += studentDbState.view === 'official' ? renderOfficialStudentCatalogue(isAdmin) : '';
+  if (studentDbState.view === 'submit') html += renderStudentSubmitPanel();
+  if (studentDbState.view === 'submissions') html += renderFormMasterSubmissionList();
+  if (studentDbState.view === 'pending') html += renderPendingApprovals();
+  if (studentDbState.view === 'requests') html += renderAdminChangeRequests();
+  if (studentDbState.view === 'enrolExisting') html += renderExistingStudentEnrolmentPanel();
+  if (studentDbState.view === 'corrections') html += renderCorrectionPanel();
+  workspace.innerHTML = html;
+  workspace.querySelectorAll('.student-db-tab').forEach(function(button) { button.addEventListener('click', function() { studentDbState.view = button.dataset.view; renderStudentDatabaseWorkspace(); }); });
+  bindStudentDatabaseEvents(workspace);
+  bindExistingStudentEnrolmentEvents(workspace);
+}
+
+function bindExistingStudentEnrolmentEvents(root) {
+  var searchInput = root.querySelector('#existingStudentSearch');
+  var resultContainer = root.querySelector('#existingStudentSearchResults');
+  var status = root.querySelector('#existingStudentSearchStatus');
+  var sessionSelect = root.querySelector('#existingStudentSession');
+  var classSelect = root.querySelector('#existingStudentClass');
+  var enrolButton = root.querySelector('#enrolExistingStudentBtn');
+  if (!searchInput || !resultContainer || !status || !sessionSelect || !classSelect || !enrolButton || !supabaseClient || !authenticatedProfile || currentUser.type !== 'admin') return;
+
+  function updateEnrolButton() {
+    enrolButton.disabled = !(studentDbState.selectedExistingStudentId && sessionSelect.value && classSelect.value);
+  }
+
+  var searchSequence = 0;
+  searchInput.addEventListener('input', async function() {
+    var term = studentDbClean(this.value);
+    var sequence = ++searchSequence;
+    studentDbState.existingStudentSearchResults = [];
+    studentDbState.selectedExistingStudentId = '';
+    resultContainer.innerHTML = renderExistingStudentSearchResults();
+    updateEnrolButton();
+    if (term.length < 2) { status.textContent = 'Enter at least 2 characters to search.'; return; }
+    status.textContent = 'Searching official students…';
+    try {
+      var fields = ['first_name', 'middle_name', 'last_name', 'admission_number'];
+      var queries = await Promise.all(fields.map(function(field) {
+        return supabaseClient.from('students').select('id,first_name,middle_name,last_name,admission_number')
+          .eq('school_id', authenticatedProfile.school_id).ilike(field, '%' + term + '%').order('last_name').limit(25);
+      }));
+      var failed = queries.find(function(result) { return result.error; });
+      if (failed) throw failed.error;
+      if (sequence !== searchSequence) return;
+      var unique = {};
+      queries.forEach(function(result) { (result.data || []).forEach(function(student) { unique[String(student.id)] = student; }); });
+      studentDbState.existingStudentSearchResults = Object.keys(unique).map(function(id) { return unique[id]; });
+      resultContainer.innerHTML = renderExistingStudentSearchResults();
+      status.textContent = studentDbState.existingStudentSearchResults.length ? 'Select the intended official student record from the results.' : 'No official students matched this search.';
+      resultContainer.querySelectorAll('input[name="existingStudentChoice"]').forEach(function(input) {
+        input.addEventListener('change', function() {
+          studentDbState.selectedExistingStudentId = this.value;
+          updateEnrolButton();
+        });
+      });
+    } catch (error) {
+      if (sequence !== searchSequence) return;
+      console.error('Existing student search failed:', error);
+      studentDbState.existingStudentSearchResults = [];
+      resultContainer.innerHTML = renderExistingStudentSearchResults();
+      status.textContent = 'Unable to search official students. Please try again.';
+    }
+  });
+
+  sessionSelect.addEventListener('change', updateEnrolButton);
+  classSelect.addEventListener('change', updateEnrolButton);
+  enrolButton.addEventListener('click', async function() {
+    var selectedStudentId = studentDbState.selectedExistingStudentId;
+    var selectedAcademicSessionId = sessionSelect.value;
+    var selectedClassId = classSelect.value;
+    if (!selectedStudentId || !selectedAcademicSessionId || !selectedClassId) {
+      status.textContent = 'Select a student, academic session, and class before enrolling.';
+      updateEnrolButton();
+      return;
+    }
+
+    enrolButton.disabled = true;
+    enrolButton.textContent = 'Enrolling…';
+    status.textContent = 'Creating enrolment…';
+    try {
+      var result = await supabaseClient.rpc('enrol_existing_student', {
+        p_student_id: selectedStudentId,
+        p_academic_session_id: selectedAcademicSessionId,
+        p_class_id: selectedClassId
+      });
+      if (result.error) throw result.error;
+      var enrolmentData = Array.isArray(result.data) ? result.data[0] : result.data;
+      if (enrolmentData && (enrolmentData.success === false || enrolmentData.error)) {
+        throw new Error(enrolmentData.error || enrolmentData.message || 'Enrolment failed.');
+      }
+      var sid = enrolmentData && (enrolmentData.sid || enrolmentData.student_sid) || '';
+      studentDbState.selectedExistingStudentId = '';
+      studentDbState.existingStudentSearchResults = [];
+      status.textContent = 'Student enrolled successfully.' + (sid ? ' SID: ' + sid : '');
+      showToast('Student enrolled successfully.' + (sid ? ' SID: ' + sid : ''), 'success');
+      renderStudentDatabase();
+    } catch (error) {
+      console.error('Existing student enrolment failed:', error);
+      status.textContent = error && error.message ? 'Unable to enrol existing student: ' + error.message : 'Unable to enrol existing student. Please try again.';
+      showToast(status.textContent, 'error');
+      enrolButton.disabled = false;
+    } finally {
+      if (enrolButton.isConnected) enrolButton.textContent = 'Enrol Existing Student';
+    }
+  });
+  updateEnrolButton();
+}
+
+function renderExistingStudentEnrolmentPanel() {
+  if (!currentUser || currentUser.type !== 'admin') return '<p class="alert alert-error">Administrator access is required.</p>';
+  var sessionOptions = availableAcademicSessions.map(function(session) {
+    return '<option value="' + escapeManagementText(session.id) + '">' + escapeManagementText(session.name) + '</option>';
+  }).join('');
+  var classOptions = studentDbState.classes.map(function(item) {
+    return '<option value="' + escapeManagementText(item.id) + '">' + escapeManagementText(item.class_name) + '</option>';
+  }).join('');
+  return '<section class="card"><h3>Enrol Existing Student</h3>' +
+    '<p style="color:#555;margin:8px 0 14px">Search the official student catalogue and explicitly select the existing student. This workflow preserves that student’s permanent identity; it never matches students automatically by name.</p>' +
+    '<div class="input-group"><label for="existingStudentSearch">Search official students by name or admission number</label><input id="existingStudentSearch" type="search" placeholder="Enter at least 2 characters"></div>' +
+    '<div id="existingStudentSearchStatus" role="status" aria-live="polite"></div><div id="existingStudentSearchResults" style="overflow-x:auto">' + renderExistingStudentSearchResults() + '</div>' +
+    '<div class="grid grid-2" style="margin-top:14px"><div class="input-group"><label for="existingStudentSession">Academic Session</label><select id="existingStudentSession"><option value="">Select session</option>' + sessionOptions + '</select></div>' +
+    '<div class="input-group"><label for="existingStudentClass">Class / Arm</label><select id="existingStudentClass"><option value="">Select class</option>' + classOptions + '</select></div></div>' +
+    '<button type="button" class="btn btn-success" id="enrolExistingStudentBtn" disabled>Enrol Existing Student</button>' +
+    '<p class="alert alert-info" style="margin-top:12px">Enrolment is not available yet. A secure database RPC named enrol_existing_student(p_student_id uuid, p_academic_session_id uuid, p_class_id uuid) must be created before this page can create an enrolment. No student or enrolment records are written here.</p></section>';
+}
+
+function renderExistingStudentSearchResults() {
+  var results = studentDbState.existingStudentSearchResults || [];
+  if (!results.length) return '<p style="color:#777;padding:10px 0">Search for an official student, then select the correct record.</p>';
+  return '<table><thead><tr><th>Select</th><th>Student</th><th>Admission Number</th><th>Student ID</th></tr></thead><tbody>' + results.map(function(student) {
+    var name = [student.first_name, student.middle_name, student.last_name].filter(Boolean).join(' ');
+    return '<tr><td><input type="radio" name="existingStudentChoice" value="' + escapeManagementText(student.id) + '"' + (String(studentDbState.selectedExistingStudentId) === String(student.id) ? ' checked' : '') + ' aria-label="Select ' + escapeManagementText(name) + '"></td><td>' + escapeManagementText(name) + '</td><td>' + escapeManagementText(student.admission_number || '—') + '</td><td><small>' + escapeManagementText(student.id) + '</small></td></tr>';
+  }).join('') + '</tbody></table>';
+}
+
+function renderOfficialStudentCatalogue(isAdmin) {
+  var classList = isAdmin ? studentDbState.classes : studentDbState.assignedClasses;
+  var groups = {};
+  classList.forEach(function(item) {
+    var name = String(item.class_name || '');
+    var match = name.match(/^(BASIC)([7-9])|^(SS)([1-3])/i);
+    var label = match ? (match[1] ? 'BASIC ' + match[2] : 'SS ' + match[4]) : 'Other Classes';
+    (groups[label] = groups[label] || []).push(item);
+  });
+  var options = Object.keys(groups).sort(function(a, b) { return a.localeCompare(b, undefined, { numeric: true }); }).map(function(label) {
+    return '<optgroup label="' + escapeManagementText(label) + '">' + groups[label].sort(function(a, b) { return a.class_name.localeCompare(b.class_name); }).map(function(item) {
+      return '<option value="' + escapeManagementText(item.id) + '"' + (String(item.id) === String(studentDbState.activeClassId) ? ' selected' : '') + '>' + escapeManagementText(item.class_name) + '</option>';
+    }).join('') + '</optgroup>';
+  }).join('');
+  return '<div class="input-group"><label for="studentDbClass">Class Arm</label><select id="studentDbClass"><option value="">Select class</option>' + options + '</select></div><div class="input-group"><label for="studentDbSearch">Search Student (SID or name)</label><input id="studentDbSearch" type="search" placeholder="Search by SID or student name"></div>' +
+    '<div style="overflow-x:auto"><table><thead><tr><th>S/N</th><th>SID</th><th>Student Name</th><th>Gender</th><th>Date of Birth</th><th>Guardian</th><th>Status</th>' + (!isAdmin ? '<th>Action</th>' : '') + '</tr></thead><tbody id="studentDbOfficialRows">' + renderOfficialStudentRows(isAdmin, query) + '</tbody></table></div>';
+}
+
+function renderOfficialStudentRows(isAdmin, query) {
+  var list = studentDbState.official.filter(function(item) {
+    var student = item.student || {};
+    var enrolment = item.enrolment || {};
+    var term = String(query || '').toLowerCase();
+    return !term || String(enrolment.sid || '').toLowerCase().includes(term) || studentDbName(student).toLowerCase().includes(term);
+  });
+  return list.map(function(item, index) {
+    var student = item.student, enrolment = item.enrolment;
+    return '<tr><td>' + (index + 1) + '</td><td>' + escapeManagementText(enrolment.sid || '—') + '</td><td>' + escapeManagementText(studentDbName(student)) + '</td><td>' + escapeManagementText(student.gender || '—') + '</td><td>' + escapeManagementText(studentDbDate(student.date_of_birth) || '—') + '</td><td>' + escapeManagementText(student.guardian_name || '—') + '<br><small>' + escapeManagementText(student.guardian_phone || '') + '</small></td><td>' + escapeManagementText(student.status || '—') + '</td>' + (!isAdmin ? '<td><button class="btn btn-primary student-correction-start" data-student="' + escapeManagementText(student.id) + '">Request Correction</button></td>' : '') + '</tr>';
+  }).join('') || '<tr><td colspan="8" style="color:#777">No official students enrolled in this class for the active session.</td></tr>';
+}
+
+function renderStudentSubmitPanel() {
+  return '<div class="grid grid-2"><div class="input-group"><label for="studentSubmissionClass">Assigned Class *</label><select id="studentSubmissionClass">' + studentDbClassOptions() + '</select></div><div class="input-group"><label>Submission method</label><div><label><input type="radio" name="studentSubmitMode" value="manual" checked> Add manually</label> &nbsp; <label><input type="radio" name="studentSubmitMode" value="excel"> Upload Excel</label></div></div></div><div id="studentManualFields"><div class="input-group"><label>Full Name *</label><input id="studentFullName" autocomplete="name"></div><p style="color:#666;font-size:12px;margin-bottom:12px">The current import-row schema stores a full name only. SID and register number are generated by the database during approval.</p><button class="btn btn-primary" id="studentPreviewBtn">Preview Submission</button><div id="studentManualPreview"></div></div><div id="studentExcelFields" class="hidden"><p style="color:#555;margin-bottom:10px">Upload rows with one column: Full Name. SID, register number and student ID are not required or generated by this page.</p><input id="studentExcelFile" type="file" accept=".xlsx,.xls,.csv"><div style="margin:10px 0"><button class="btn btn-primary" id="studentTemplateBtn">Download Excel Template</button> <button class="btn btn-primary" id="studentParseExcelBtn">Preview Excel</button></div><div id="studentExcelPreview"></div></div><div id="studentSubmitStatus" role="status" aria-live="polite"></div>';
+}
+
+function renderFormMasterSubmissionList() {
+  return '<h3>My Student Submissions</h3><div style="overflow-x:auto"><table><thead><tr><th>Student</th><th>Class</th><th>Submitted</th><th>Status</th><th>Reason</th></tr></thead><tbody>' + studentDbState.importRows.map(function(row) {
+    var full = studentDbName(row);
+    return '<tr><td>' + escapeManagementText(full || '—') + '</td><td>' + escapeManagementText(studentDbClassLabel(row.class_id)) + '</td><td>' + escapeManagementText(studentDbDate(row.created_at)) + '</td><td>' + studentDbStatusBadge(row.status) + '</td><td>' + escapeManagementText(row.rejection_reason || '') + '</td></tr>';
+  }).join('') + '</tbody></table></div>';
+}
+
+function renderPendingApprovals() {
+  return '<h3>Pending Student Approvals</h3><div style="overflow-x:auto"><table><thead><tr><th>Student Name</th><th>Class</th><th>Submitted By</th><th>Submission Type</th><th>Date Submitted</th><th>Status</th><th>Action</th></tr></thead><tbody>' + studentDbState.pending.map(function(row) {
+    var name = studentDbName(row) || 'Student';
+    return '<tr><td>' + escapeManagementText(name) + '</td><td>' + escapeManagementText(studentDbClassLabel(row.class_id)) + '</td><td>' + escapeManagementText(row.submitted_by || '—') + '</td><td>' + escapeManagementText(row.submission_type || 'manual') + '</td><td>' + escapeManagementText(studentDbDate(row.created_at)) + '</td><td>' + studentDbStatusBadge(row.status) + '</td><td><button class="btn btn-primary student-row-view" data-id="' + escapeManagementText(row.id) + '">View</button></td></tr>';
+  }).join('') + '</tbody></table></div><div id="studentApprovalPreview"></div>';
+}
+
+function renderAdminChangeRequests() {
+  return '<h3>Student Change Requests</h3><div style="overflow-x:auto"><table><thead><tr><th>Student</th><th>Requested By</th><th>Date</th><th>Status</th><th>Action</th></tr></thead><tbody>' + studentDbState.requests.map(function(request) {
+    return '<tr><td>' + escapeManagementText(request.student_id || '—') + '</td><td>' + escapeManagementText(request.submitted_by || '—') + '</td><td>' + escapeManagementText(studentDbDate(request.created_at)) + '</td><td>' + studentDbStatusBadge(request.status) + '</td><td>' + (request.status === 'pending' ? '<button class="btn btn-primary change-request-view" data-id="' + escapeManagementText(request.id) + '">Review</button>' : '—') + '</td></tr>';
+  }).join('') + '</tbody></table></div><div id="studentChangeReview"></div>';
+}
+
+function renderCorrectionPanel() {
+  return '<div class="input-group"><label for="correctionStudent">Student to correct</label><select id="correctionStudent"><option value="">Select a student</option>' + studentDbState.official.map(function(item) { return '<option value="' + escapeManagementText(item.student.id) + '">' + escapeManagementText(studentDbName(item.student) + ' — ' + (item.enrolment.sid || '')) + '</option>'; }).join('') + '</select></div><div class="input-group"><label for="correctionReason">Reason for correction</label><textarea id="correctionReason" rows="2"></textarea></div><div id="correctionFields"></div>';
+}
+
+function studentDbValidate(row) {
+  row.full_name = studentDbClean(row.full_name);
+  return row.full_name ? [] : ['Missing Full Name'];
+}
+
+async function submitStudentForApproval(rows, classId, submissionType) {
+  if (!classId || !studentDbState.assignedClasses.some(function(item) { return String(item.id) === String(classId); })) throw new Error('You are not assigned to the selected class.');
+  if (!activeAcademicSession || !activeAcademicSession.id) throw new Error('No active academic session is available.');
+  var batchResult = await supabaseClient.from('student_import_batches').insert({
+    school_id: authenticatedProfile.school_id, academic_session_id: activeAcademicSession.id,
+    class_id: classId, submitted_by: authenticatedProfile.id, submission_type: submissionType,
+    status: 'pending', total_rows: rows.length, approved_rows: 0, rejected_rows: 0
+  }).select('id').single();
+  if (batchResult.error) throw batchResult.error;
+  var batchId = batchResult.data.id;
+  var payload = rows.map(function(row) {
+    return { batch_id: batchId, school_id: authenticatedProfile.school_id, class_id: classId,
+      full_name: studentDbClean(row.full_name), status: 'pending' };
+  });
+  var rowResult = await supabaseClient.from('student_import_rows').insert(payload);
+  if (rowResult.error) {
+    await supabaseClient.from('student_import_batches').update({ status: 'rejected' }).eq('id', batchId).eq('school_id', authenticatedProfile.school_id);
+    throw rowResult.error;
+  }
+  return batchId;
+}
+
+async function approveStudentImportRow(importRowId) {
+  var result = await supabaseClient.rpc('approve_student_import_row', { p_import_row_id: importRowId });
+  if (result.error) throw result.error;
+  var data = Array.isArray(result.data) ? result.data[0] : result.data;
+  if (data && (data.success === false || data.error)) throw new Error(data.error || data.message || 'Student approval failed.');
+  var sid = data && (data.sid || data.student_sid) || '';
+  var studentId = data && (data.student_id || data.id) || '';
+  return { data: data, sid: sid, studentId: studentId };
+}
+
+async function rejectStudentImportRow(importRowId, reason) {
+  if (!studentDbClean(reason)) throw new Error('A rejection reason is required.');
+  var result = await supabaseClient.from('student_import_rows').update({ status: 'rejected', rejection_reason: studentDbClean(reason) }).eq('id', importRowId).eq('school_id', authenticatedProfile.school_id).eq('status', 'pending');
+  if (result.error) throw result.error;
+}
+
+async function refreshStudentBatchStatus(batchId) {
+  if (!batchId) return;
+  var rows = await supabaseClient.from('student_import_rows').select('status').eq('batch_id', batchId);
+  if (rows.error) throw rows.error;
+  var statuses = (rows.data || []).map(function(row) { return row.status; });
+  var approved = statuses.filter(function(status) { return status === 'approved'; }).length;
+  var rejected = statuses.filter(function(status) { return status === 'rejected'; }).length;
+  var pending = statuses.filter(function(status) { return status === 'pending'; }).length;
+  var status = pending ? ((approved || rejected) ? 'partially_approved' : 'pending') : (approved && rejected ? 'partially_approved' : (approved ? 'approved' : 'rejected'));
+  var update = await supabaseClient.from('student_import_batches').update({ total_rows: statuses.length, approved_rows: approved, rejected_rows: rejected, status: status }).eq('id', batchId).eq('school_id', authenticatedProfile.school_id);
+  if (update.error) throw update.error;
+}
+
+function normalizeStudentExcelDate(value) {
+  if (value instanceof Date && !isNaN(value.getTime())) return value.toISOString().slice(0, 10);
+  if (typeof value === 'number' && window.XLSX && XLSX.SSF) {
+    var parts = XLSX.SSF.parse_date_code(value);
+    if (parts) return String(parts.y).padStart(4, '0') + '-' + String(parts.m).padStart(2, '0') + '-' + String(parts.d).padStart(2, '0');
+  }
+  var text = studentDbClean(value);
+  var local = text.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/);
+  if (local) return local[3] + '-' + String(local[2]).padStart(2, '0') + '-' + String(local[1]).padStart(2, '0');
+  return text;
+}
+
+async function uploadStudentExcel(file) {
+  var workbook = await readSpreadsheetWorkbook(file);
+  var sheet = workbook.Sheets[workbook.SheetNames[0]];
+  var rawRows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+  var fullNameHeader = Object.keys(rawRows[0] || {}).find(function(header) {
+    return ['full name', 'student name'].indexOf(String(header).trim().toLowerCase()) !== -1;
+  });
+  var rows = rawRows.map(function(source, index) {
+    var row = { full_name: studentDbClean(fullNameHeader ? source[fullNameHeader] : '') };
+    row._row = index + 2;
+    row._errors = Object.keys(source).every(function(key) { return !studentDbClean(source[key]); }) ? ['Empty row'] : studentDbValidate(row);
+    return row;
+  }).filter(function(row) { return row._errors.indexOf('Empty row') === -1; });
+  return rows;
+}
+
+function bindStudentDatabaseEvents(root) {
+  var classSelect = root.querySelector('#studentDbClass');
+  if (classSelect) classSelect.addEventListener('change', async function() {
+    studentDbState.activeClassId = this.value;
+    try { await loadOfficialStudents(this.value); renderStudentDatabaseWorkspace(); }
+    catch (error) { studentDbError(error, 'Unable to load official students.'); }
+  });
+  var search = root.querySelector('#studentDbSearch');
+  if (search) search.addEventListener('input', function() {
+    var rows = root.querySelector('#studentDbOfficialRows');
+    if (rows) rows.innerHTML = renderOfficialStudentRows(currentUser.type === 'admin', this.value);
+  });
+  root.querySelectorAll('input[name="studentSubmitMode"]').forEach(function(input) { input.addEventListener('change', function() {
+    root.querySelector('#studentManualFields').classList.toggle('hidden', this.value !== 'manual');
+    root.querySelector('#studentExcelFields').classList.toggle('hidden', this.value !== 'excel');
+  }); });
+  var classForSubmission = root.querySelector('#studentSubmissionClass');
+  if (classForSubmission) classForSubmission.addEventListener('change', function() { studentDbState.activeClassId = this.value; });
+  var previewButton = root.querySelector('#studentPreviewBtn');
+  if (previewButton) previewButton.addEventListener('click', function() {
+    var row = { full_name: root.querySelector('#studentFullName').value };
+    var errors = studentDbValidate(row);
+    var preview = root.querySelector('#studentManualPreview');
+    if (errors.length) { preview.innerHTML = '<p class="alert alert-error">' + escapeManagementText(errors.join('. ')) + '</p>'; return; }
+    preview.innerHTML = '<div class="card"><h3>Student Preview</h3><p><strong>Name:</strong> ' + escapeManagementText(row.full_name) + '</p><p><strong>Class:</strong> ' + escapeManagementText(studentDbClassLabel(root.querySelector('#studentSubmissionClass').value)) + '</p><button class="btn btn-success" id="studentManualSubmitBtn">Submit for Approval</button></div>';
+    preview.querySelector('#studentManualSubmitBtn').addEventListener('click', async function() {
+      this.disabled = true; this.textContent = 'Submitting…';
+      try { await submitStudentForApproval([row], root.querySelector('#studentSubmissionClass').value, 'manual'); root.querySelector('#studentSubmitStatus').innerHTML = '<p class="alert alert-success">Student submitted successfully and is awaiting Administrator approval.</p>'; preview.innerHTML = ''; }
+      catch (error) { studentDbError(error, 'Unable to submit student. Please try again.'); this.disabled = false; this.textContent = 'Submit for Approval'; }
+    });
+  });
+  var templateButton = root.querySelector('#studentTemplateBtn');
+  if (templateButton) templateButton.addEventListener('click', function() {
+    if (typeof XLSX === 'undefined') { showToast('Excel template library is unavailable.', 'error'); return; }
+    var workbook = XLSX.utils.book_new();
+    var sheet = XLSX.utils.aoa_to_sheet([['Full Name']]);
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Students');
+    XLSX.writeFile(workbook, 'Student_Import_Template.xlsx');
+  });
+  var parseButton = root.querySelector('#studentParseExcelBtn');
+  if (parseButton) parseButton.addEventListener('click', async function() {
+    var file = root.querySelector('#studentExcelFile').files[0];
+    if (!file) { showToast('Choose an Excel file first.', 'error'); return; }
+    parseButton.disabled = true; parseButton.textContent = 'Reading…';
+    try {
+      studentDbState.draftRows = await uploadStudentExcel(file);
+      var target = root.querySelector('#studentExcelPreview');
+      target.innerHTML = '<p>' + studentDbState.draftRows.length + ' row(s) found. Review or correct names below; invalid rows will not be submitted.</p><div style="overflow-x:auto"><table><thead><tr><th>Excel Row</th><th>Full Name</th><th>Validation</th></tr></thead><tbody>' + studentDbState.draftRows.map(function(row, index) { return '<tr data-draft-index="' + index + '"><td>' + row._row + '</td><td><input class="student-draft-field" data-field="full_name" value="' + escapeManagementText(row.full_name) + '" style="min-width:220px;padding:5px"></td><td class="student-draft-errors" style="color:' + (row._errors.length ? '#b00020' : '#176b2c') + '">' + escapeManagementText(row._errors.join(', ') || 'Valid') + '</td></tr>'; }).join('') + '</tbody></table></div><button class="btn btn-success" id="studentExcelSubmitBtn">Submit Valid Rows for Approval</button>';
+      target.querySelector('#studentExcelSubmitBtn').addEventListener('click', async function() {
+        target.querySelectorAll('tr[data-draft-index]').forEach(function(tr) {
+          var row = studentDbState.draftRows[Number(tr.dataset.draftIndex)];
+          tr.querySelectorAll('.student-draft-field').forEach(function(input) { row[input.dataset.field] = input.value; });
+          row._errors = studentDbValidate(row);
+          var errorCell = tr.querySelector('.student-draft-errors');
+          errorCell.textContent = row._errors.join(', ') || 'Valid';
+          errorCell.style.color = row._errors.length ? '#b00020' : '#176b2c';
+        });
+        var valid = studentDbState.draftRows.filter(function(row) { return row._errors.length === 0; }).map(function(row) { var copy = Object.assign({}, row); delete copy._row; delete copy._errors; return copy; });
+        if (!valid.length) { showToast('There are no valid rows to submit.', 'error'); return; }
+        this.disabled = true; this.textContent = 'Submitting…';
+        try { await submitStudentForApproval(valid, root.querySelector('#studentSubmissionClass').value, 'excel'); root.querySelector('#studentSubmitStatus').innerHTML = '<p class="alert alert-success">' + valid.length + ' student row(s) submitted and awaiting Administrator approval.</p>'; target.innerHTML = ''; }
+        catch (error) { studentDbError(error, 'Unable to submit student rows. Please try again.'); this.disabled = false; this.textContent = 'Submit Valid Rows for Approval'; }
+      });
+    } catch (error) { studentDbError(error, error.message || 'Unable to read the Excel file.'); }
+    finally { parseButton.disabled = false; parseButton.textContent = 'Preview Excel'; }
+  });
+  root.querySelectorAll('.student-row-view').forEach(function(button) { button.addEventListener('click', function() {
+    var row = studentDbState.pending.find(function(item) { return String(item.id) === button.dataset.id; }); if (!row) return;
+    var preview = root.querySelector('#studentApprovalPreview');
+    preview.innerHTML = '<div class="card"><h4>Submitted Student Details</h4><p><strong>Name:</strong> ' + escapeManagementText(studentDbName(row) || '—') + '</p><p><strong>Student Number:</strong> ' + escapeManagementText(row.student_number || '—') + '</p><p><strong>Class:</strong> ' + escapeManagementText(studentDbClassLabel(row.class_id)) + '</p><p><strong>Submission Type:</strong> ' + escapeManagementText(row.submission_type || 'manual') + '</p><button class="btn btn-success" id="approveStudentBtn">Approve</button> <button class="btn btn-danger" id="rejectStudentBtn">Reject</button><div id="studentDecisionStatus"></div></div>';
+    preview.querySelector('#approveStudentBtn').addEventListener('click', async function() {
+      this.disabled = true;
+      try {
+        var approval = await approveStudentImportRow(row.id);
+        await refreshStudentBatchStatus(row.batch_id);
+        var message = 'Student Approved Successfully. Student: ' + studentDbName(row) + '. Class: ' + studentDbClassLabel(row.class_id) + '. SID: ' + (approval.sid || 'Not returned by approval function');
+        preview.querySelector('#studentDecisionStatus').innerHTML = '<p class="alert alert-success">' + escapeManagementText(message) + '</p>';
+        await loadPendingStudentApprovals();
+        if (studentDbState.activeClassId) await loadOfficialStudents(studentDbState.activeClassId);
+      } catch (error) { studentDbError(error, 'Unable to approve student.'); this.disabled = false; }
+    });
+    preview.querySelector('#rejectStudentBtn').addEventListener('click', async function() {
+      var reason = window.prompt('Enter the reason for rejection:'); if (reason === null) return;
+      this.disabled = true;
+      try { await rejectStudentImportRow(row.id, reason); await refreshStudentBatchStatus(row.batch_id); await loadPendingStudentApprovals(); renderStudentDatabaseWorkspace(); showToast('Student submission rejected.', 'info'); }
+      catch (error) { studentDbError(error, 'Unable to reject student.'); this.disabled = false; }
+    });
+  }); });
+  root.querySelectorAll('.student-correction-start').forEach(function(button) { button.addEventListener('click', function() { studentDbState.view = 'corrections'; renderStudentDatabaseWorkspace(); var select = document.getElementById('correctionStudent'); if (select) { select.value = button.dataset.student; select.dispatchEvent(new Event('change')); } }); });
+  var correctionSelect = root.querySelector('#correctionStudent');
+  if (correctionSelect) correctionSelect.addEventListener('change', function() {
+    var item = studentDbState.official.find(function(record) { return String(record.student.id) === String(this.value); }.bind(this));
+    var fields = root.querySelector('#correctionFields'); if (!fields) return;
+    if (!item) { fields.innerHTML = ''; return; }
+    var student = item.student;
+    var keys = [['first_name','First Name'],['middle_name','Middle Name'],['last_name','Last Name'],['gender','Gender'],['date_of_birth','Date of Birth'],['guardian_name','Guardian Name'],['guardian_phone','Guardian Phone'],['guardian_email','Guardian Email']];
+    fields.innerHTML = '<div class="grid grid-2">' + keys.map(function(pair) { return '<div class="input-group"><label>' + pair[1] + ' — current: ' + escapeManagementText(student[pair[0]] || '—') + '</label><input class="correction-proposal" data-field="' + pair[0] + '" value="' + escapeManagementText(student[pair[0]] || '') + '"></div>'; }).join('') + '</div><button class="btn btn-success" id="submitCorrectionBtn">Submit Correction Request</button>';
+    fields.querySelector('#submitCorrectionBtn').addEventListener('click', async function() {
+      var changes = Array.from(fields.querySelectorAll('.correction-proposal')).map(function(input) { return { field_name: input.dataset.field, old_value: String(student[input.dataset.field] || ''), new_value: studentDbClean(input.value) }; }).filter(function(change) { return change.new_value !== change.old_value; });
+      if (!changes.length) { showToast('No changes were entered.', 'info'); return; }
+      this.disabled = true;
+      try {
+        var reason = studentDbClean(root.querySelector('#correctionReason').value);
+        if (!reason) throw new Error('Enter a reason for the correction request.');
+        var requestResult = await supabaseClient.from('student_change_requests').insert({ school_id: authenticatedProfile.school_id, student_id: student.id, submitted_by: authenticatedProfile.id, reason: reason, status: 'pending' }).select('id').single();
+        if (requestResult.error) throw requestResult.error;
+        var itemsResult = await supabaseClient.from('student_change_request_items').insert(changes.map(function(change) { return { request_id: requestResult.data.id, field_name: change.field_name, old_value: change.old_value, new_value: change.new_value }; }));
+        if (itemsResult.error) throw itemsResult.error;
+        showToast('Correction request submitted for Administrator approval.', 'success'); renderStudentDatabase();
+      } catch (error) { studentDbError(error, 'Unable to submit correction request.'); this.disabled = false; }
+    });
+  });
+  root.querySelectorAll('.change-request-view').forEach(function(button) { button.addEventListener('click', async function() {
+    var request = studentDbState.requests.find(function(item) { return String(item.id) === button.dataset.id; }); if (!request) return;
+    var itemsResult = await supabaseClient.from('student_change_request_items').select('*').eq('request_id', request.id);
+    if (itemsResult.error) { studentDbError(itemsResult.error, 'Unable to load correction details.'); return; }
+    var target = root.querySelector('#studentChangeReview');
+    target.innerHTML = '<div class="card"><h4>Proposed Student Changes</h4><div style="overflow-x:auto"><table><thead><tr><th>Field</th><th>Old Value</th><th>New Value</th></tr></thead><tbody>' + (itemsResult.data || []).map(function(item) { return '<tr><td>' + escapeManagementText(item.field_name) + '</td><td>' + escapeManagementText(item.old_value) + '</td><td>' + escapeManagementText(item.new_value) + '</td></tr>'; }).join('') + '</tbody></table></div><button class="btn btn-success" id="approveChangeBtn">Approve</button> <button class="btn btn-danger" id="rejectChangeBtn">Reject</button></div>';
+    target.querySelector('#approveChangeBtn').addEventListener('click', function() { decideStudentChangeRequest(request, itemsResult.data || [], true, this); });
+    target.querySelector('#rejectChangeBtn').addEventListener('click', function() { decideStudentChangeRequest(request, itemsResult.data || [], false, this); });
+  }); });
+}
+
+async function decideStudentChangeRequest(request, items, approve, button) {
+  button.disabled = true;
+  try {
+    var requestId = request.id;
+    if (approve) {
+      var approval = await supabaseClient.rpc('approve_student_change_request', {
+        p_request_id: requestId
+      });
+      if (approval.error) throw approval.error;
+      showToast('Student correction approved.', 'success');
+      renderStudentDatabase();
+      return;
+    }
+    var result = await supabaseClient.from('student_change_requests').update({ status: 'rejected', reviewed_by: authenticatedProfile.id, reviewed_at: new Date().toISOString() }).eq('id', requestId).eq('school_id', authenticatedProfile.school_id).eq('status', 'pending');
+    if (result.error) throw result.error;
+    showToast('Student correction rejected.', 'info');
+    renderStudentDatabase();
+  } catch (error) { studentDbError(error, 'Unable to update the student change request.'); button.disabled = false; }
 }
 
 // ===================== STAFF DATABASE =====================
