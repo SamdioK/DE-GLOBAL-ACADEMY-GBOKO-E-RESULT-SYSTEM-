@@ -2008,11 +2008,22 @@ function renderMasters() {
     var filteredSubjects = sectionSubjects.filter(function(subject) {
       return !searchTerm || String(subject.name || '').toLowerCase().startsWith(searchTerm);
     });
-    subjSelect.innerHTML = '<option value="">' + (filteredSubjects.length ? 'Select an active subject' : (searchTerm ? 'No matching subjects' : 'No subjects available for this class')) + '</option>' +
-      filteredSubjects.map(function(item) {
+    var seenSubjectIds = new Set();
+    var seenSubjectNames = new Set();
+    var uniqueSubjects = filteredSubjects.filter(function(subject) {
+      var subjectId = String(subject.id || '').trim();
+      var subjectName = String(subject.name || '').trim().replace(/\s+/g, ' ').toLowerCase();
+      if (!subjectId || !subjectName || seenSubjectIds.has(subjectId) || seenSubjectNames.has(subjectName)) return false;
+      seenSubjectIds.add(subjectId);
+      seenSubjectNames.add(subjectName);
+      return true;
+    });
+    subjSelect.innerHTML = '';
+    subjSelect.innerHTML = '<option value="">' + (uniqueSubjects.length ? 'Select an active subject' : (searchTerm ? 'No matching subjects' : 'No subjects available for this class')) + '</option>' +
+      uniqueSubjects.map(function(item) {
         return '<option value="' + escapeManagementText(item.id) + '">' + escapeManagementText(item.name) + '</option>';
       }).join('');
-    subjSelect.disabled = filteredSubjects.length === 0;
+    subjSelect.disabled = uniqueSubjects.length === 0;
   }
   async function populateStSubjectOptions() {
     var subjSelect = document.getElementById('newStSubject');
