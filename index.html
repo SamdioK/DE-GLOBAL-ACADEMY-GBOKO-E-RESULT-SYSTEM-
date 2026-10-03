@@ -80,7 +80,23 @@ th { background: #f5f5f5; font-weight: 600; }
 .management-modal-content { background: #fff; width: min(900px, 100%); max-height: 90vh; overflow-y: auto; border-radius: 12px; padding: 24px; }
 .management-profile { display: flex; gap: 16px; align-items: flex-start; border: 1px solid #eee; border-radius: 8px; padding: 15px; margin-top: 12px; }
 .management-profile img { width: 100px; height: 100px; object-fit: cover; border-radius: 8px; background: #f3f3f3; }
-@media (max-width: 768px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } .header-content { flex-direction: column; gap: 10px; } .management-profile { flex-direction: column; } }
+.student-class-picker { margin: 14px 0 20px; }
+.student-class-picker-groups { display: grid; gap: 18px; }
+.student-class-picker-group { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.student-class-level { min-width: 0; padding: 12px; border: 1px solid #e1e6f2; border-radius: 12px; background: linear-gradient(180deg, #f8faff, #fff); box-shadow: 0 3px 10px rgba(42, 61, 112, .07); }
+.student-class-level-banner { display: block; width: 100%; padding: 10px 12px; border: 0; border-radius: 8px; background: linear-gradient(120deg, #536bd8, #7352a6); color: #fff; text-align: center; font-size: 14px; font-weight: 700; letter-spacing: .04em; box-shadow: 0 3px 8px rgba(66, 76, 151, .2); }
+.student-class-picker-group.senior .student-class-level-banner { background: linear-gradient(120deg, #13827c, #3068a7); }
+.student-class-arms { display: flex; justify-content: center; align-items: flex-start; flex-wrap: wrap; gap: 8px; padding-top: 2px; }
+.student-class-arm { position: relative; min-width: 42px; margin-top: 13px; padding: 9px 12px; border: 1px solid #d9e1f2; border-radius: 9px; background: #fff; color: #34436f; font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: 0 3px 8px rgba(34, 51, 94, .1); transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease, background .16s ease; }
+.student-class-arm::before { position: absolute; top: -14px; left: 50%; width: 2px; height: 14px; background: #9aa7c0; content: ''; transform: translateX(-50%); }
+.student-class-arm:hover { transform: translateY(2px); border-color: #7588db; box-shadow: 0 5px 12px rgba(34, 51, 94, .16); }
+.student-class-arm.selected { border-color: #4c62ca; background: #e9edff; color: #293eaa; box-shadow: 0 0 0 2px rgba(76, 98, 202, .18), 0 4px 10px rgba(34, 51, 94, .12); }
+.student-class-arm:focus-visible { outline: 3px solid #f0b429; outline-offset: 2px; }
+.student-class-native-select { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
+.student-class-other { margin-top: 12px; }
+.student-class-other .student-class-arms { justify-content: flex-start; }
+@media (max-width: 768px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } .header-content { flex-direction: column; gap: 10px; } .management-profile { flex-direction: column; } .student-class-picker-group { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; } }
+@media (max-width: 420px) { .student-class-picker-group { grid-template-columns: 1fr; } .student-class-level { padding: 10px; } }
 </style>
 </head>
 <body>
@@ -1363,6 +1379,28 @@ function studentDbError(error, fallback) {
   showToast(fallback, 'error');
 }
 
+function studentDbThrowQueryError(error, query) {
+  if (error && typeof error === 'object') error.studentDbQuery = query;
+  console.error('Student Database Supabase query failed:', query, {
+    message: error && error.message,
+    code: error && error.code,
+    details: error && error.details,
+    hint: error && error.hint,
+    error: error
+  });
+  throw error;
+}
+
+function studentDbErrorDetails(error) {
+  return [
+    'Failing query/table: ' + (error && error.studentDbQuery || 'Not identified (non-query error)'),
+    'error.message: ' + (error && error.message || '(not provided)'),
+    'error.code: ' + (error && error.code || '(not provided)'),
+    'error.details: ' + (error && error.details || '(not provided)'),
+    'error.hint: ' + (error && error.hint || '(not provided)')
+  ].join('\\n');
+}
+
 function studentDbName(student) {
   if (student && student.full_name) return studentDbClean(student.full_name);
   return [student && student.first_name, student && student.middle_name, student && student.last_name].filter(Boolean).join(' ');
@@ -1393,14 +1431,14 @@ function studentDbStatusBadge(status) {
 async function loadStudentDatabase() {
   if (!supabaseClient || !authenticatedProfile || !authenticatedProfile.school_id || !activeAcademicSession) throw new Error('An authenticated account and active academic session are required.');
   var classesResult = await supabaseClient.from('classes').select('id,class_name').eq('school_id', authenticatedProfile.school_id).order('class_name');
-  if (classesResult.error) throw classesResult.error;
+  if (classesResult.error) studentDbThrowQueryError(classesResult.error, "SELECT id,class_name FROM classes WHERE school_id = authenticatedProfile.school_id ORDER BY class_name");
   studentDbState.classes = classesResult.data || [];
   if (currentUser.type === 'formmaster') {
     var assignmentResult = await supabaseClient.from('form_master_assignments').select('class_id')
       .eq('school_id', authenticatedProfile.school_id)
       .eq('academic_session_id', activeAcademicSession.id)
       .eq('teacher_id', authenticatedProfile.id);
-    if (assignmentResult.error) throw assignmentResult.error;
+    if (assignmentResult.error) studentDbThrowQueryError(assignmentResult.error, "SELECT class_id FROM form_master_assignments WHERE school_id = authenticatedProfile.school_id AND academic_session_id = activeAcademicSession.id AND teacher_id = authenticatedProfile.id");
     var myAssignments = assignmentResult.data || [];
     var classIds = myAssignments.map(function(row) { return row.class_id; }).filter(Boolean);
     studentDbState.assignedClasses = studentDbState.classes.filter(function(item) { return classIds.some(function(id) { return String(id) === String(item.id); }); });
@@ -1416,12 +1454,12 @@ async function loadOfficialStudents(classId) {
   if (!classId) { studentDbState.official = []; return; }
   var enrolmentsResult = await supabaseClient.from('student_enrolments').select('*')
     .eq('school_id', authenticatedProfile.school_id).eq('academic_session_id', activeAcademicSession.id).eq('class_id', classId).order('register_number');
-  if (enrolmentsResult.error) throw enrolmentsResult.error;
+  if (enrolmentsResult.error) studentDbThrowQueryError(enrolmentsResult.error, "SELECT * FROM student_enrolments WHERE school_id = authenticatedProfile.school_id AND academic_session_id = activeAcademicSession.id AND class_id = classId ORDER BY register_number");
   var enrolments = enrolmentsResult.data || [];
   var ids = enrolments.map(function(item) { return item.student_id; }).filter(Boolean);
   if (!ids.length) { studentDbState.official = []; return; }
   var studentsResult = await supabaseClient.from('students').select('*').eq('school_id', authenticatedProfile.school_id).in('id', ids);
-  if (studentsResult.error) throw studentsResult.error;
+  if (studentsResult.error) studentDbThrowQueryError(studentsResult.error, "SELECT * FROM students WHERE school_id = authenticatedProfile.school_id AND id IN (student_enrolments.student_id values)");
   var byId = {};
   (studentsResult.data || []).forEach(function(student) { byId[String(student.id)] = student; });
   studentDbState.official = enrolments.map(function(enrolment) {
@@ -1431,18 +1469,18 @@ async function loadOfficialStudents(classId) {
 
 async function loadPendingStudentApprovals() {
   var batches = await supabaseClient.from('student_import_batches').select('*').eq('school_id', authenticatedProfile.school_id).eq('academic_session_id', activeAcademicSession.id);
-  if (batches.error) throw batches.error;
+  if (batches.error) studentDbThrowQueryError(batches.error, "SELECT * FROM student_import_batches WHERE school_id = authenticatedProfile.school_id AND academic_session_id = activeAcademicSession.id");
   var batchMap = {};
   (batches.data || []).forEach(function(batch) { batchMap[String(batch.id)] = batch; });
   var batchIds = Object.keys(batchMap);
   if (!batchIds.length) { studentDbState.pending = []; return; }
   var result = await supabaseClient.from('student_import_rows').select('*').in('batch_id', batchIds).eq('status', 'pending').order('created_at', { ascending: true });
-  if (result.error) throw result.error;
+  if (result.error) studentDbThrowQueryError(result.error, "SELECT * FROM student_import_rows WHERE batch_id IN (student_import_batches.id values) AND status = 'pending' ORDER BY created_at ASC");
   var submitterIds = (batches.data || []).map(function(batch) { return batch.submitted_by; }).filter(function(id, index, list) { return id && list.indexOf(id) === index; });
   var submitterNames = {};
   if (submitterIds.length) {
     var profilesResult = await supabaseClient.from('profiles').select('id,full_name').in('id', submitterIds);
-    if (profilesResult.error) console.error('Could not load submitter names:', profilesResult.error);
+    if (profilesResult.error) console.error('Student Database non-blocking query failed: SELECT id,full_name FROM profiles WHERE id IN (submitted_by values)', { message: profilesResult.error.message, code: profilesResult.error.code, details: profilesResult.error.details, hint: profilesResult.error.hint, error: profilesResult.error });
     else (profilesResult.data || []).forEach(function(profile) { submitterNames[String(profile.id)] = profile.full_name; });
   }
   studentDbState.pending = (result.data || []).map(function(row) { var batch = batchMap[String(row.batch_id)] || {}; var submitterId = row.submitted_by || batch.submitted_by; return Object.assign({}, row, { class_id: row.class_id || batch.class_id, submitted_by: submitterNames[String(submitterId)] || submitterId, submission_type: row.submission_type || batch.submission_type }); });
@@ -1450,19 +1488,19 @@ async function loadPendingStudentApprovals() {
 
 async function loadStudentChangeRequests() {
   var result = await supabaseClient.from('student_change_requests').select('*').eq('school_id', authenticatedProfile.school_id).order('created_at', { ascending: false });
-  if (result.error) throw result.error;
+  if (result.error) studentDbThrowQueryError(result.error, "SELECT * FROM student_change_requests WHERE school_id = authenticatedProfile.school_id ORDER BY created_at DESC");
   studentDbState.requests = result.data || [];
 }
 
 async function loadFormMasterSubmissions() {
   var batches = await supabaseClient.from('student_import_batches').select('*').eq('school_id', authenticatedProfile.school_id).eq('academic_session_id', activeAcademicSession.id).eq('submitted_by', authenticatedProfile.id).order('created_at', { ascending: false });
-  if (batches.error) throw batches.error;
+  if (batches.error) studentDbThrowQueryError(batches.error, "SELECT * FROM student_import_batches WHERE school_id = authenticatedProfile.school_id AND academic_session_id = activeAcademicSession.id AND submitted_by = authenticatedProfile.id ORDER BY created_at DESC");
   var batchMap = {};
   (batches.data || []).forEach(function(batch) { batchMap[String(batch.id)] = batch; });
   var ids = Object.keys(batchMap);
   if (!ids.length) { studentDbState.importRows = []; return; }
   var result = await supabaseClient.from('student_import_rows').select('*').in('batch_id', ids).order('created_at', { ascending: false });
-  if (result.error) throw result.error;
+  if (result.error) studentDbThrowQueryError(result.error, "SELECT * FROM student_import_rows WHERE batch_id IN (submitted student_import_batches.id values) ORDER BY created_at DESC");
   studentDbState.importRows = (result.data || []).map(function(row) { var batch = batchMap[String(row.batch_id)] || {}; return Object.assign({}, row, { class_id: row.class_id || batch.class_id, submission_type: row.submission_type || batch.submission_type }); });
 }
 
@@ -1485,9 +1523,25 @@ function renderStudentDatabase() {
     if (studentDbState.activeClassId) await loadOfficialStudents(studentDbState.activeClassId);
     renderStudentDatabaseWorkspace();
   }).catch(function(error) {
-    console.error('Student Database load failed:', error);
+    var queryLabel = error && error.studentDbQuery ? error.studentDbQuery : 'Non-query Student Database error';
+    var errorMessage = error && error.message ? error.message : '(not provided)';
+    var errorCode = error && error.code ? error.code : '(not provided)';
+    var errorDetails = error && error.details ? error.details : '(not provided)';
+    var errorHint = error && error.hint ? error.hint : '(not provided)';
+    console.error('Student Database load failed:', {
+      query: queryLabel,
+      message: errorMessage,
+      code: errorCode,
+      details: errorDetails,
+      hint: errorHint,
+      error: error || null
+    });
     var loading = document.getElementById('studentDbLoading');
-    if (loading) { loading.className = 'alert alert-error'; loading.textContent = 'Unable to load the Student Database. Check your access and try again.'; }
+    if (loading) {
+      loading.className = 'alert alert-error';
+      loading.style.whiteSpace = 'pre-wrap';
+      loading.textContent = 'Unable to load the Student Database. Check your access and try again.\\n\\nFailing query/table: ' + queryLabel + '\\nerror.message: ' + errorMessage + '\\nerror.code: ' + errorCode + '\\nerror.details: ' + errorDetails + '\\nerror.hint: ' + errorHint;
+    }
   });
 }
 
@@ -1639,20 +1693,44 @@ function renderExistingStudentSearchResults() {
 
 function renderOfficialStudentCatalogue(isAdmin) {
   var classList = isAdmin ? studentDbState.classes : studentDbState.assignedClasses;
-  var groups = {};
+  var levels = [
+    { key: 'BASIC7', label: 'BASIC 7' }, { key: 'BASIC8', label: 'BASIC 8' }, { key: 'BASIC9', label: 'BASIC 9' },
+    { key: 'SS1', label: 'SS 1' }, { key: 'SS2', label: 'SS 2' }, { key: 'SS3', label: 'SS 3' }
+  ];
+  var groupedOptions = {};
+  var levelSections = { basic: [], senior: [] };
+  var otherClasses = [];
   classList.forEach(function(item) {
-    var name = String(item.class_name || '');
-    var match = name.match(/^(BASIC)([7-9])|^(SS)([1-3])/i);
-    var label = match ? (match[1] ? 'BASIC ' + match[2] : 'SS ' + match[4]) : 'Other Classes';
-    (groups[label] = groups[label] || []).push(item);
+    var normalizedName = String(item.class_name || '').toUpperCase().replace(/\s+/g, '');
+    var level = levels.find(function(entry) { return normalizedName.indexOf(entry.key) === 0; });
+    if (level) {
+      (groupedOptions[level.key] = groupedOptions[level.key] || []).push(item);
+    } else {
+      otherClasses.push(item);
+    }
   });
-  var options = Object.keys(groups).sort(function(a, b) { return a.localeCompare(b, undefined, { numeric: true }); }).map(function(label) {
-    return '<optgroup label="' + escapeManagementText(label) + '">' + groups[label].sort(function(a, b) { return a.class_name.localeCompare(b.class_name); }).map(function(item) {
-      return '<option value="' + escapeManagementText(item.id) + '"' + (String(item.id) === String(studentDbState.activeClassId) ? ' selected' : '') + '>' + escapeManagementText(item.class_name) + '</option>';
-    }).join('') + '</optgroup>';
+  var options = '<option value="">Select class</option>' + classList.map(function(item) {
+    return '<option value="' + escapeManagementText(item.id) + '"' + (String(item.id) === String(studentDbState.activeClassId) ? ' selected' : '') + '>' + escapeManagementText(item.class_name) + '</option>';
   }).join('');
-  return '<div class="input-group"><label for="studentDbClass">Class Arm</label><select id="studentDbClass"><option value="">Select class</option>' + options + '</select></div><div class="input-group"><label for="studentDbSearch">Search Student (SID or name)</label><input id="studentDbSearch" type="search" placeholder="Search by SID or student name"></div>' +
-    '<div style="overflow-x:auto"><table><thead><tr><th>S/N</th><th>SID</th><th>Student Name</th><th>Gender</th><th>Date of Birth</th><th>Guardian</th><th>Status</th>' + (!isAdmin ? '<th>Action</th>' : '') + '</tr></thead><tbody id="studentDbOfficialRows">' + renderOfficialStudentRows(isAdmin, query) + '</tbody></table></div>';
+  function renderLevel(level) {
+    var arms = (groupedOptions[level.key] || []).slice().sort(function(a, b) { return String(a.class_name).localeCompare(String(b.class_name), undefined, { numeric: true }); });
+    var armButtons = arms.map(function(item) {
+      var normalizedName = String(item.class_name || '').toUpperCase().replace(/\s+/g, '');
+      var armLabel = normalizedName.indexOf(level.key) === 0 ? normalizedName.slice(level.key.length) : String(item.class_name || '');
+      if (!armLabel) armLabel = String(item.class_name || '');
+      var selected = String(item.id) === String(studentDbState.activeClassId);
+      return '<button type="button" class="student-class-arm' + (selected ? ' selected' : '') + '" data-student-class-id="' + escapeManagementText(item.id) + '" aria-pressed="' + selected + '" aria-label="Select ' + escapeManagementText(item.class_name) + '">' + escapeManagementText(armLabel) + '</button>';
+    }).join('');
+    return '<section class="student-class-level" aria-label="' + level.label + ' classes"><div class="student-class-level-banner">' + level.label + '</div><div class="student-class-arms">' + (armButtons || '<span style="color:#8a93a8;font-size:12px;padding:10px">No arms available</span>') + '</div></section>';
+  }
+  levels.slice(0, 3).forEach(function(level) { levelSections.basic.push(renderLevel(level)); });
+  levels.slice(3).forEach(function(level) { levelSections.senior.push(renderLevel(level)); });
+  var otherHtml = otherClasses.length ? '<section class="student-class-level student-class-other"><div class="student-class-level-banner">Other Classes</div><div class="student-class-arms">' + otherClasses.map(function(item) {
+    var selected = String(item.id) === String(studentDbState.activeClassId);
+    return '<button type="button" class="student-class-arm' + (selected ? ' selected' : '') + '" data-student-class-id="' + escapeManagementText(item.id) + '" aria-pressed="' + selected + '" aria-label="Select ' + escapeManagementText(item.class_name) + '">' + escapeManagementText(item.class_name) + '</button>';
+  }).join('') + '</div></section>' : '';
+  return '<div class="input-group student-class-picker"><label for="studentDbClass">Class Arm</label><select id="studentDbClass" class="student-class-native-select" aria-label="Select class arm">' + options + '</select><div class="student-class-picker-groups"><div class="student-class-picker-group basic">' + levelSections.basic.join('') + '</div><div class="student-class-picker-group senior">' + levelSections.senior.join('') + '</div></div>' + otherHtml + '</div><div class="input-group"><label for="studentDbSearch">Search Student (SID or name)</label><input id="studentDbSearch" type="search" placeholder="Search by SID or student name"></div>' +
+    '<div style="overflow-x:auto"><table><thead><tr><th>S/N</th><th>SID</th><th>Student Name</th><th>Gender</th><th>Date of Birth</th><th>Guardian</th><th>Status</th>' + (!isAdmin ? '<th>Action</th>' : '') + '</tr></thead><tbody id="studentDbOfficialRows">' + renderOfficialStudentRows(isAdmin, '') + '</tbody></table></div>';
 }
 
 function renderOfficialStudentRows(isAdmin, query) {
@@ -1786,6 +1864,13 @@ function bindStudentDatabaseEvents(root) {
     studentDbState.activeClassId = this.value;
     try { await loadOfficialStudents(this.value); renderStudentDatabaseWorkspace(); }
     catch (error) { studentDbError(error, 'Unable to load official students.'); }
+  });
+  root.querySelectorAll('.student-class-arm').forEach(function(button) {
+    button.addEventListener('click', function() {
+      if (!classSelect || String(classSelect.value) === String(button.dataset.studentClassId)) return;
+      classSelect.value = button.dataset.studentClassId;
+      classSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
   });
   var search = root.querySelector('#studentDbSearch');
   if (search) search.addEventListener('input', function() {
@@ -2399,7 +2484,7 @@ function renderDashboard() {
   var html = '<div class="card" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px;"><h2 style="margin-bottom: 10px;">Welcome, ' + currentUser.name + '!</h2><p style="opacity: 0.9;">' + currentSchool.schoolName + '</p><p style="opacity: 0.9;">Location: <strong>' + currentSchool.location + '</strong></p></div>';
   html += '<div class="grid grid-2"><div class="card"><div style="font-size: 28px; font-weight: bold; color: #667eea;">30</div><div style="color: #666; margin-top: 5px; font-size: 14px;">Class Arms</div></div>';
   html += '<div class="card"><div style="font-size: 28px; font-weight: bold; color: #667eea;">' + formMasters.length + '</div><div style="color: #666; margin-top: 5px; font-size: 14px;">Form Masters</div></div>';
-  html += '<div class="card"><div style="font-size: 28px; font-weight: bold; color: #667eea;">' + students.length + '</div><div style="color: #666; margin-top: 5px; font-size: 14px;">Students</div></div>';
+  html += '<div class="card"><div style="font-size: 28px; font-weight: bold; color: #667eea;">' + students.length + '</div><div style="color: #666; margin-top: 5px; font-size: 14px;">Student Result Records (All Sessions)</div></div>';
   html += '<div class="card"><div style="font-size: 28px; font-weight: bold; color: #667eea;">' + assigned + '</div><div style="color: #666; margin-top: 5px; font-size: 14px;">Assigned Arms</div></div></div>';
 
   html += '<div class="card" style="margin-top: 20px;"><h3 style="margin-bottom: 15px;">🔓 Activate Form Master Access</h3><p style="color: #666; margin-bottom: 15px;">Enable specific class arms to allow their form masters to login and enter results</p>';
@@ -3814,11 +3899,22 @@ function renderCompute() {
   document.getElementById('computeTab').innerHTML = '<div class="card" style="text-align: center; padding: 40px;"><h2>Compute Results</h2><p style="color: #666; margin-bottom: 20px;">Calculate positions for all students by class and term</p><button class="btn btn-primary" onclick="computePositions()" style="padding: 10px 30px; font-size: 15px;">Compute Positions</button></div>';
 }
 
+function getLegacyResultSession(student) {
+  return String(student && student.session || schoolInfo.session || currentSchool && currentSchool.session || '');
+}
+
+function getLegacyResultSessionNames() {
+  var names = students.map(getLegacyResultSession).filter(function(session, index, list) {
+    return session && list.indexOf(session) === index;
+  });
+  return names.sort();
+}
+
 window.computePositions = async function() {
   if (!currentUser || currentUser.type !== 'admin') { showToast('Only the main administrator can compute positions', 'error'); return; }
   var grouped = {};
   students.forEach(function(s) {
-    var key = s.className + '-' + s.term;
+    var key = JSON.stringify([s.className || '', String(s.term || ''), getLegacyResultSession(s)]);
     if (!grouped[key]) grouped[key] = [];
     grouped[key].push(s);
   });
@@ -3843,11 +3939,11 @@ function renderView() {
   if (userStudents.length === 0) {
     html += '<p style="color: #999; text-align: center; padding: 40px;">No students found</p></div>';
   } else {
-    html += '<div style="margin-bottom: 15px;"><strong>Total Students: ' + userStudents.length + '</strong></div><div style="overflow-x: auto;"><table><thead><tr><th>Name</th><th>Adm No</th><th>Class</th><th>Term</th><th>Subjects</th><th>Avg</th><th>Position</th><th>Passport</th><th>Action</th></tr></thead><tbody>';
+    html += '<div style="margin-bottom: 15px;"><strong>Total Students: ' + userStudents.length + '</strong></div><div style="overflow-x: auto;"><table><thead><tr><th>Name</th><th>Adm No</th><th>Class</th><th>Term</th><th>Session</th><th>Subjects</th><th>Avg</th><th>Position</th><th>Passport</th><th>Action</th></tr></thead><tbody>';
     userStudents.forEach(function(s) {
       var passportCell = s.passport ? '<img src="' + escapeManagementText(s.passport) + '" alt="Passport photo of ' + escapeManagementText(s.studentName) + '" style="width:48px;height:58px;object-fit:cover;border-radius:4px;">' : '<span style="color:#999;">No photo</span>';
       if (canManagePassports) passportCell = '<label class="btn btn-primary" style="display:inline-block; padding:5px 8px; cursor:pointer;">' + (s.passport ? 'Replace Photo' : 'Upload Photo') + '<input type="file" class="passport-upload" data-student-id="' + s.id + '" accept="image/*" style="display:none;"></label>';
-      html += '<tr><td>' + s.studentName + '</td><td>' + s.admNo + '</td><td>' + s.className + '</td><td>' + s.term + '</td><td>' + s.subjects.length + '</td><td>' + s.averageScore.toFixed(1) + '%</td><td>' + (s.position || '-') + '/' + (s.positionOf || '-') + '</td><td>' + passportCell + '</td><td>' + (canDeleteStudents ? '<button class="btn btn-danger" onclick="removeStudent(' + s.id + ')" style="padding: 4px 12px; font-size: 11px;">Remove</button>' : '—') + '</td></tr>';
+      html += '<tr><td>' + s.studentName + '</td><td>' + s.admNo + '</td><td>' + s.className + '</td><td>' + s.term + '</td><td>' + escapeManagementText(getLegacyResultSession(s) || '—') + '</td><td>' + s.subjects.length + '</td><td>' + s.averageScore.toFixed(1) + '%</td><td>' + (s.position || '-') + '/' + (s.positionOf || '-') + '</td><td>' + passportCell + '</td><td>' + (canDeleteStudents ? '<button class="btn btn-danger" onclick="removeStudent(' + s.id + ')" style="padding: 4px 12px; font-size: 11px;">Remove</button>' : '—') + '</td></tr>';
     });
     html += '</tbody></table></div></div>';
   }
@@ -3897,7 +3993,7 @@ window.exportToExcel = function() {
   if (typeof XLSX === 'undefined') { showToast('Export library not loaded', 'error'); return; }
 
   var summaryRows = userStudents.map(function(s) {
-    return { 'Student Name': s.studentName, 'Admission No': s.admNo, 'Class': s.className, 'Term': s.term, 'Sex': s.sex, 'Age': s.age, 'Date of Birth': s.dob, 'No. of Subjects': s.subjects.length, 'Total Obtained': s.totalObtained, 'Total Obtainable': s.totalObtainable, 'Average (%)': s.averageScore.toFixed(1), 'Position': s.position || '', 'Out Of': s.positionOf || '', 'Form Master': s.formMaster || '', "Form Master\'s Comment": s.formMasterComment || '' };
+    return { 'Student Name': s.studentName, 'Admission No': s.admNo, 'Class': s.className, 'Term': s.term, 'Academic Session': getLegacyResultSession(s), 'Sex': s.sex, 'Age': s.age, 'Date of Birth': s.dob, 'No. of Subjects': s.subjects.length, 'Total Obtained': s.totalObtained, 'Total Obtainable': s.totalObtainable, 'Average (%)': s.averageScore.toFixed(1), 'Position': s.position || '', 'Out Of': s.positionOf || '', 'Form Master': s.formMaster || '', "Form Master\'s Comment": s.formMasterComment || '' };
   });
 
   var wb = XLSX.utils.book_new();
@@ -3906,13 +4002,13 @@ window.exportToExcel = function() {
   var detailRows = [];
   userStudents.forEach(function(s) {
     s.subjects.forEach(function(sub) {
-      detailRows.push({ 'Student Name': s.studentName, 'Admission No': s.admNo, 'Class': s.className, 'Term': s.term, 'Subject': sub.name, 'CA1': sub.ca1, 'CA2': sub.ca2, 'CA3': sub.ca3, 'Exam': sub.exam, 'Total': sub.total, 'Grade': sub.grade, 'Remark': sub.remark });
+      detailRows.push({ 'Student Name': s.studentName, 'Admission No': s.admNo, 'Class': s.className, 'Term': s.term, 'Academic Session': getLegacyResultSession(s), 'Subject': sub.name, 'CA1': sub.ca1, 'CA2': sub.ca2, 'CA3': sub.ca3, 'Exam': sub.exam, 'Total': sub.total, 'Grade': sub.grade, 'Remark': sub.remark });
     });
   });
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detailRows), 'Subject Scores');
 
   var domainRows = userStudents.map(function(s) {
-    var row = { 'Student Name': s.studentName, 'Admission No': s.admNo, 'Class': s.className, 'Term': s.term };
+    var row = { 'Student Name': s.studentName, 'Admission No': s.admNo, 'Class': s.className, 'Term': s.term, 'Academic Session': getLegacyResultSession(s) };
     affectiveDomains.forEach(function(d) { row['Affective: ' + d] = s.affective ? s.affective[d] : ''; });
     psychomotorDomains.forEach(function(d) { row['Psychomotor: ' + d] = s.psychomotor ? s.psychomotor[d] : ''; });
     return row;
@@ -3968,11 +4064,18 @@ function normalizeAdmissionNumber(admissionNumber) {
 
 function renderPrint() {
   selectedResultDate = selectedResultDate || schoolInfo.stampDate || getTodayDateInputValue();
+  var sessionNames = getLegacyResultSessionNames();
+  var currentSession = String(schoolInfo.session || currentSchool && currentSchool.session || '');
+  var selectedSession = sessionNames.indexOf(currentSession) !== -1 ? currentSession : (sessionNames[0] || '');
+  var sessionOptions = sessionNames.map(function(session) {
+    return '<option value="' + escapeManagementText(session) + '"' + (session === selectedSession ? ' selected' : '') + '>' + escapeManagementText(session) + '</option>';
+  }).join('');
   var html = '<div class="card"><h2 style="margin-bottom: 15px;">Print Student Results</h2>' +
     '<p style="color:#666; margin-bottom:15px; font-size:13px;">Choose an individual student, class arm, or class level. The selected document date appears on each result and inside the school stamp.</p>' +
     '<div class="grid grid-3" style="margin-bottom: 20px;">' +
     '<div class="input-group"><label>Print Scope</label><select id="printScope"><option value="individual">Individual Student</option><option value="arm">Whole Class Arm</option><option value="level">Whole Class (All Arms)</option></select></div>' +
     '<div class="input-group"><label>Term</label><select id="printTerm"><option value="1">Term 1</option><option value="2">Term 2</option><option value="3">Term 3</option></select></div>' +
+    '<div class="input-group"><label>Academic Session</label><select id="printSession">' + (sessionOptions || '<option value="">No saved sessions</option>') + '</select></div>' +
     '<div class="input-group"><label>Document / Result Date</label><input type="date" id="printResultDate" value="' + selectedResultDate + '"></div>' +
     '<div class="input-group" id="printTargetContainer"></div>' +
     '</div>' +
@@ -3982,6 +4085,7 @@ function renderPrint() {
 
   document.getElementById('printScope').addEventListener('change', updatePrintUI);
   document.getElementById('printTerm').addEventListener('change', updatePrintUI);
+  document.getElementById('printSession').addEventListener('change', updatePrintUI);
   document.getElementById('printResultDate').addEventListener('change', function() { selectedResultDate = this.value || getTodayDateInputValue(); });
   updatePrintUI();
 }
@@ -3989,18 +4093,19 @@ function renderPrint() {
 function updatePrintUI() {
   var scope = document.getElementById('printScope').value;
   var term = document.getElementById('printTerm').value;
+  var session = document.getElementById('printSession').value;
   var targetContainer = document.getElementById('printTargetContainer');
   var actionArea = document.getElementById('printActionArea');
 
   if (scope === 'individual') {
     targetContainer.innerHTML = '';
-    var list = students.filter(function(s) { return String(s.term) === term; });
+    var list = students.filter(function(s) { return String(s.term) === term && getLegacyResultSession(s) === session; });
     if (list.length === 0) {
-      actionArea.innerHTML = '<p style="color:#999; padding: 20px 0;">No students found for this term</p>';
+      actionArea.innerHTML = '<p style="color:#999; padding: 20px 0;">No students found for this session and term</p>';
     } else {
-      var html = '<div style="overflow-x:auto;"><table><thead><tr><th>Name</th><th>Adm No</th><th>Class</th><th>Avg</th><th>Action</th></tr></thead><tbody>';
+      var html = '<div style="overflow-x:auto;"><table><thead><tr><th>Name</th><th>Adm No</th><th>Class</th><th>Session</th><th>Avg</th><th>Action</th></tr></thead><tbody>';
       list.forEach(function(s) {
-        html += '<tr><td>' + s.studentName + '</td><td>' + s.admNo + '</td><td>' + s.className + '</td><td>' + s.averageScore.toFixed(1) + '%</td><td style="white-space:nowrap;"><button class="btn btn-success" onclick="printStudentResult(' + s.id + ')" style="padding:5px 12px; font-size:11px;">📄 PDF</button> <button class="btn btn-primary" onclick="printStudentResult(' + s.id + ', \'print\')" style="padding:5px 12px; font-size:11px;">🖨 Print</button> <button class="btn" onclick="shareStudentResult(\'whatsapp\', ' + s.id + ')" style="padding:5px 12px; font-size:11px; background:#25D366; color:white;">WhatsApp</button> </td></tr>';
+        html += '<tr><td>' + s.studentName + '</td><td>' + s.admNo + '</td><td>' + s.className + '</td><td>' + escapeManagementText(getLegacyResultSession(s)) + '</td><td>' + s.averageScore.toFixed(1) + '%</td><td style="white-space:nowrap;"><button class="btn btn-success" onclick="printStudentResult(' + s.id + ')" style="padding:5px 12px; font-size:11px;">📄 PDF</button> <button class="btn btn-primary" onclick="printStudentResult(' + s.id + ', \'print\')" style="padding:5px 12px; font-size:11px;">🖨 Print</button> <button class="btn" onclick="shareStudentResult(\'whatsapp\', ' + s.id + ')" style="padding:5px 12px; font-size:11px; background:#25D366; color:white;">WhatsApp</button> </td></tr>';
       });
       html += '</tbody></table></div>';
       actionArea.innerHTML = html;
@@ -4018,11 +4123,13 @@ function updatePrintUI() {
 window.printArmResultsHandler = function(action) {
   var armSelect = document.getElementById('printArmSelect');
   var termSelect = document.getElementById('printTerm');
-  if (!armSelect || !termSelect) return;
+  var sessionSelect = document.getElementById('printSession');
+  if (!armSelect || !termSelect || !sessionSelect) return;
   var armName = armSelect.value;
   var term = termSelect.value;
-  var list = students.filter(function(s) { return s.className === armName && String(s.term) === term; });
-  var label = armName + ' - Term ' + term;
+  var session = sessionSelect.value;
+  var list = students.filter(function(s) { return s.className === armName && String(s.term) === term && getLegacyResultSession(s) === session; });
+  var label = armName + ' - ' + session + ' - Term ' + term;
   if (action === 'print') openPrintWindow(list.map(buildStudentSheetHTML).join(''), label + ' Results');
   else printMultipleResults(list, label);
 };
@@ -4030,12 +4137,14 @@ window.printArmResultsHandler = function(action) {
 window.printLevelResultsHandler = function(action) {
   var levelSelect = document.getElementById('printLevelSelect');
   var termSelect = document.getElementById('printTerm');
-  if (!levelSelect || !termSelect) return;
+  var sessionSelect = document.getElementById('printSession');
+  if (!levelSelect || !termSelect || !sessionSelect) return;
   var level = levelSelect.value;
   var term = termSelect.value;
+  var session = sessionSelect.value;
   var armsInLevel = classArms.filter(function(a) { return a.name.indexOf(level) === 0; }).map(function(a) { return a.name; });
-  var list = students.filter(function(s) { return armsInLevel.indexOf(s.className) !== -1 && String(s.term) === term; });
-  var label = level + ' (All Arms) - Term ' + term;
+  var list = students.filter(function(s) { return armsInLevel.indexOf(s.className) !== -1 && String(s.term) === term && getLegacyResultSession(s) === session; });
+  var label = level + ' (All Arms) - ' + session + ' - Term ' + term;
   if (action === 'print') openPrintWindow(list.map(buildStudentSheetHTML).join(''), label + ' Results');
   else printMultipleResults(list, label);
 };
@@ -4050,19 +4159,21 @@ window.printStudentResult = function(studentId, action) {
 
 function getSelectedPrintResults(scope) {
   var termSelect = document.getElementById('printTerm');
-  if (!termSelect) return { list: [], label: '' };
+  var sessionSelect = document.getElementById('printSession');
+  if (!termSelect || !sessionSelect) return { list: [], label: '' };
   var term = termSelect.value;
+  var session = sessionSelect.value;
   if (scope === 'arm') {
     var armSelect = document.getElementById('printArmSelect');
     if (!armSelect) return { list: [], label: '' };
     var armName = armSelect.value;
-    return { list: students.filter(function(s) { return s.className === armName && String(s.term) === term; }), label: armName + ' - Term ' + term };
+    return { list: students.filter(function(s) { return s.className === armName && String(s.term) === term && getLegacyResultSession(s) === session; }), label: armName + ' - ' + session + ' - Term ' + term };
   }
   var levelSelect = document.getElementById('printLevelSelect');
   if (!levelSelect) return { list: [], label: '' };
   var level = levelSelect.value;
   var armsInLevel = classArms.filter(function(a) { return a.name.indexOf(level) === 0; }).map(function(a) { return a.name; });
-  return { list: students.filter(function(s) { return armsInLevel.indexOf(s.className) !== -1 && String(s.term) === term; }), label: level + ' (All Arms) - Term ' + term };
+  return { list: students.filter(function(s) { return armsInLevel.indexOf(s.className) !== -1 && String(s.term) === term && getLegacyResultSession(s) === session; }), label: level + ' (All Arms) - ' + session + ' - Term ' + term };
 }
 
 window.shareStudentResult = function(channel, studentId) {
