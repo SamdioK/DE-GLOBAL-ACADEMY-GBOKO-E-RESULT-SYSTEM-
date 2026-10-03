@@ -1970,8 +1970,9 @@ function renderMasters() {
   if (subjectAssignments.length > 0) html += '<button class="btn btn-danger" onclick="clearAllAssignments()">Clear All Subject Teachers</button>';
   html += '</div><p style="color:#666; font-size:13px; margin-bottom:15px;">Assign a teacher to a specific class arm and subject. Activate a slot to let that teacher log in and enter scores for only that subject.</p>';
   html += '<div style="background: #f9f9f9; padding: 15px; border-radius: 8px; margin-bottom: 20px;"><h3 style="margin: 0 0 15px 0; font-size: 16px;">Add Subject Teacher</h3><div class="grid grid-3">';
-  html += '<select id="newStArm">' + classArms.map(function(a) { return '<option value="' + a.name + '">' + a.name + '</option>'; }).join('') + '</select>';
-  html += '<select id="newStSubject"><option value="">Select an active subject</option></select>';
+  html += '<div class="input-group"><label for="newStArm">Class</label><select id="newStArm">' + classArms.map(function(a) { return '<option value="' + a.name + '">' + a.name + '</option>'; }).join('') + '</select></div>';
+  html += '<div class="input-group" style="grid-column:1/-1;margin-bottom:0"><label for="newStSubjectSearch">Search Subject</label><input type="search" id="newStSubjectSearch" placeholder="Type subject name..." autocomplete="off" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px"></div>';
+  html += '<div class="input-group"><label for="newStSubject">Subject</label><select id="newStSubject"><option value="">Select an active subject</option></select></div>';
   html += '<input type="text" id="newStName" placeholder="Teacher Name" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">';
   html += '<input type="email" id="newStEmail" placeholder="Teacher Email" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">';
   html += '<input type="password" id="newStPassword" placeholder="Password" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">';
@@ -1991,6 +1992,28 @@ function renderMasters() {
   document.getElementById('mastersTab').innerHTML = html;
 
   var availableSupabaseSubjects = [];
+  function renderStSubjectOptions() {
+    var subjSelect = document.getElementById('newStSubject');
+    var searchInput = document.getElementById('newStSubjectSearch');
+    var classSelect = document.getElementById('newStArm');
+    if (!subjSelect || !searchInput || !classSelect) return;
+    var searchTerm = String(searchInput.value || '').trim().toLowerCase();
+    var isSeniorClass = /^SS/i.test(classSelect.value);
+    var sectionSubjects = availableSupabaseSubjects.filter(function(item) {
+      var name = String(item.name || '').trim().toLowerCase();
+      var inBasicSection = basicCoreSubjects.concat(tradeSubjects).some(function(subject) { return subject.toLowerCase() === name; });
+      var inSeniorSection = seniorCoreSubjects.some(function(subject) { return subject.toLowerCase() === name; });
+      return isSeniorClass ? inSeniorSection : inBasicSection;
+    });
+    var filteredSubjects = sectionSubjects.filter(function(subject) {
+      return !searchTerm || String(subject.name || '').toLowerCase().startsWith(searchTerm);
+    });
+    subjSelect.innerHTML = '<option value="">' + (filteredSubjects.length ? 'Select an active subject' : (searchTerm ? 'No matching subjects' : 'No subjects available for this class')) + '</option>' +
+      filteredSubjects.map(function(item) {
+        return '<option value="' + escapeManagementText(item.id) + '">' + escapeManagementText(item.name) + '</option>';
+      }).join('');
+    subjSelect.disabled = filteredSubjects.length === 0;
+  }
   async function populateStSubjectOptions() {
     var subjSelect = document.getElementById('newStSubject');
     if (!subjSelect) return;
@@ -2013,12 +2036,14 @@ function renderMasters() {
       return;
     }
     availableSupabaseSubjects = result.data || [];
-    subjSelect.innerHTML = '<option value="">' + (availableSupabaseSubjects.length ? 'Select an active subject' : 'No active subjects available') + '</option>' +
-      availableSupabaseSubjects.map(function(item) {
-        return '<option value="' + escapeManagementText(item.id) + '">' + escapeManagementText(item.name) + '</option>';
-      }).join('');
-    subjSelect.disabled = availableSupabaseSubjects.length === 0;
+    renderStSubjectOptions();
   }
+  document.getElementById('newStSubjectSearch').addEventListener('input', renderStSubjectOptions);
+  document.getElementById('newStArm').addEventListener('change', function() {
+    document.getElementById('newStSubjectSearch').value = '';
+    document.getElementById('newStSubject').value = '';
+    renderStSubjectOptions();
+  });
   populateStSubjectOptions();
 
   var addBtn = document.getElementById('addFmBtn');
