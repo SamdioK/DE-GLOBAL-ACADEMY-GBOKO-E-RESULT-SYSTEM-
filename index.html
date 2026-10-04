@@ -615,7 +615,13 @@ async function loadAssignmentDropdown() {
 // ===================== SETUP / LOGIN / LOGOUT =====================
 async function handleSupabaseLogin(userType, errorDiv) {
   if (!supabaseClient) {
-    errorDiv.textContent = 'Supabase is not configured. Add the project anon/publishable key in index.html.';
+    if (!window.supabase) {
+      errorDiv.textContent = 'The Supabase client library did not load. Check your connection or access to the Supabase CDN, then reload the page.';
+    } else if (SUPABASE_ANON_KEY === 'INSERT_SUPABASE_ANON_OR_PUBLISHABLE_KEY_HERE') {
+      errorDiv.textContent = 'Supabase is not configured. Add the project anon/publishable key in index.html.';
+    } else {
+      errorDiv.textContent = 'The Supabase client could not be initialized. Check the browser console for details.';
+    }
     errorDiv.classList.remove('hidden');
     return;
   }
@@ -639,16 +645,20 @@ async function handleSupabaseLogin(userType, errorDiv) {
     var authResult = await supabaseClient.auth.signInWithPassword({ email: email, password: password });
     if (authResult.error || !authResult.data || !authResult.data.user) throw authResult.error || new Error('Sign-in failed.');
     var profileResult = await supabaseClient.from('profiles')
-      .select('id,school_id,full_name,username,role,is_active')
+      .select('id,school_id,full_name,username,email,role,is_active')
       .eq('id', authResult.data.user.id).maybeSingle();
     if (profileResult.error) throw profileResult.error;
     var profile = profileResult.data;
     if (!profile) throw new Error('No application profile is linked to this Supabase account.');
     if (!profile.is_active) throw new Error('This account is inactive. Contact the school administrator.');
-    if (!expectedRoles[userType] || expectedRoles[userType].indexOf(profile.role) === -1) {
-      throw new Error('This account does not have the selected login role.');
-    }
     if (!profile.school_id) throw new Error('This account is not linked to a school. Contact the administrator.');
+    var profileRolesResult = await supabaseClient.from('profile_roles').select('role').eq('profile_id', profile.id);
+    if (profileRolesResult.error) throw profileRolesResult.error;
+    var activeRoles = [profile.role].concat((profileRolesResult.data || []).map(function(item) { return item.role; }))
+      .filter(function(role, index, roles) { return role && roles.indexOf(role) === index; });
+    if (!expectedRoles[userType] || !expectedRoles[userType].some(function(role) { return activeRoles.indexOf(role) !== -1; })) {
+      throw new Error('This account does not have the selected login responsibility.');
+    }
 
     var schoolResult = await supabaseClient.from('schools').select('*').eq('id', profile.school_id).maybeSingle();
     if (schoolResult.error) throw schoolResult.error;
@@ -665,14 +675,18 @@ async function handleSupabaseLogin(userType, errorDiv) {
     await loadSchoolData();
     await loadSupabaseAssessmentConfigurations();
 
-    var appType = { administrator: 'admin', sub_administrator: 'subadmin', form_master: 'formmaster', subject_teacher: 'subjectteacher', portal_developer: 'developer', student: 'student' }[profile.role];
+    var selectedRole = expectedRoles[userType].find(function(role) { return activeRoles.indexOf(role) !== -1; });
+    var appType = { administrator: 'admin', sub_administrator: 'subadmin', form_master: 'formmaster', subject_teacher: 'subjectteacher', portal_developer: 'developer', student: 'student' }[selectedRole];
     currentUser = { type: appType, id: profile.id, name: profile.full_name, email: authResult.data.user.email, profile: profile };
     if (appType === 'formmaster') currentUser.arm = document.getElementById('selectedArm').value;
     if (appType === 'subjectteacher') {
       var assignmentId = document.getElementById('selectedAssignment').value;
       var assignment = subjectAssignments.find(function(item) { return String(item.id) === String(assignmentId); });
       if (!assignment || !assignment.activated) throw new Error('Select an activated assigned class and subject.');
-      if (String(assignment.teacherEmail || '').trim().toLowerCase() !== String(authResult.data.user.email || '').trim().toLowerCase()) {
+      var assignmentBelongsToUser = assignment.teacherId
+        ? String(assignment.teacherId) === String(profile.id)
+        : String(assignment.teacherEmail || '').trim().toLowerCase() === String(authResult.data.user.email || '').trim().toLowerCase();
+      if (!assignmentBelongsToUser) {
         throw new Error('The selected assignment does not belong to the signed-in Subject Teacher account.');
       }
       var assignedClass = assignment.classId ? { id: assignment.classId, class_name: assignment.className } : await resolveSupabaseClass(assignment.className);
@@ -2626,14 +2640,19 @@ function renderMasters() {
   html += '<div class="card"><div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;"><h2 style="margin: 0;">Subject Teachers</h2>';
   if (subjectAssignments.length > 0) html += '<button class="btn btn-danger" onclick="clearAllAssignments()">Clear All Subject Teachers</button>';
   html += '</div><p style="color:#666; font-size:13px; margin-bottom:15px;">Assign a teacher to a specific class arm and subject. Activate a slot to let that teacher log in and enter scores for only that subject.</p>';
-  html += '<div style="background: #f9f9f9; padding: 15px; border-radius: 8px; margin-bottom: 20px;"><h3 style="margin: 0 0 15px 0; font-size: 16px;">Add Subject Teacher</h3><div class="grid grid-3">';
-  html += '<div class="input-group"><label for="newStArm">Class</label><select id="newStArm">' + classArms.map(function(a) { return '<option value="' + a.name + '">' + a.name + '</option>'; }).join('') + '</select></div>';
-  html += '<div class="input-group" style="grid-column:1/-1;margin-bottom:0"><label for="newStSubjectSearch">Search Subject</label><input type="search" id="newStSubjectSearch" placeholder="Type subject name..." autocomplete="off" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px"></div>';
-  html += '<div class="input-group"><label for="newStSubject">Subject</label><select id="newStSubject"><option value="">Select an active subject</option></select></div>';
-  html += '<input type="text" id="newStName" placeholder="Teacher Name" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">';
-  html += '<input type="email" id="newStEmail" placeholder="Teacher Email" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">';
-  html += '<input type="password" id="newStPassword" placeholder="Password" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">';
-  html += '</div><button class="btn btn-success" id="addStBtn" style="margin-top: 10px;">Add Subject Teacher</button></div>';
+  html += '<div style="background: #f9f9f9; padding: 15px; border-radius: 8px; margin-bottom: 20px;"><h3 style="margin: 0 0 15px 0; font-size: 16px;">Add Subject Teacher</h3>' +
+    '<div class="input-group"><label>Subject Teacher Account Type</label><div style="display:flex;gap:18px;flex-wrap:wrap"><label><input type="radio" name="subjectTeacherAccountType" value="existing" checked> Existing Staff Member</label><label><input type="radio" name="subjectTeacherAccountType" value="new"> New Staff Member</label></div></div>' +
+    '<div id="existingStaffFields"><div class="input-group"><label for="existingStaffSearch">Search existing staff</label><input type="search" id="existingStaffSearch" placeholder="Search staff name, username or email..."></div><div class="input-group"><label for="existingStaffProfile">Select Existing Staff Member</label><select id="existingStaffProfile"><option value="">Loading active staff...</option></select></div><div id="existingStaffDetails" class="alert alert-info">Select a staff member to view their account and responsibilities.</div><div id="existingStaffLoadError" class="hidden alert alert-error"></div></div>' +
+    '<div class="grid grid-3"><div class="input-group"><label for="newStArm">Class</label><select id="newStArm">' + classArms.map(function(a) { return '<option value="' + escapeManagementText(a.name) + '">' + escapeManagementText(a.name) + '</option>'; }).join('') + '</select></div>' +
+    '<div class="input-group" style="grid-column:1/-1;margin-bottom:0"><label for="newStSubjectSearch">Search Subject</label><input type="search" id="newStSubjectSearch" placeholder="Type subject name..." autocomplete="off" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px"></div>' +
+    '<div class="input-group"><label for="newStSubject">Subject</label><select id="newStSubject"><option value="">Select an active subject</option></select></div></div>' +
+    '<div id="newSubjectTeacherFields" class="grid grid-3 hidden"><div class="input-group"><label for="newStName">Full Name</label><input type="text" id="newStName" placeholder="Teacher full name"></div>' +
+    '<div class="input-group"><label for="newStUsername">Username</label><input type="text" id="newStUsername" placeholder="Account username"></div>' +
+    '<div class="input-group"><label for="newStEmail">Email</label><input type="email" id="newStEmail" placeholder="Teacher email"></div>' +
+    '<div class="input-group"><label for="newStPhone">Phone</label><input type="tel" id="newStPhone" placeholder="Phone number"></div>' +
+    '<div class="input-group"><label for="newStPassword">Password</label><input type="password" id="newStPassword" placeholder="New account password"></div></div>' +
+    '<p id="subjectTeacherSessionInfo" class="alert alert-info" style="margin-top:12px">Academic Session: ' + escapeManagementText(activeAcademicSession ? activeAcademicSession.name : 'Unavailable') + '</p>' +
+    '<button class="btn btn-success" id="addStBtn" style="margin-top: 10px;">Assign Subject Teacher</button></div>';
 
   if (subjectAssignments.length === 0) {
     html += '<p style="color:#999; padding: 10px 0;">No subject teachers added yet</p>';
@@ -2649,13 +2668,106 @@ function renderMasters() {
   document.getElementById('mastersTab').innerHTML = html;
 
   var availableSupabaseSubjects = [];
+  var availableSupabaseClasses = [];
+  var existingStaffProfiles = [];
+  function subjectTeacherRoleLabel(role) {
+    return { administrator: 'Administrator', sub_administrator: 'Sub-Administrator', form_master: 'Form Master', subject_teacher: 'Subject Teacher', portal_developer: 'Portal Developer', student: 'Student' }[role] || String(role || '').replace(/_/g, ' ');
+  }
+  function renderExistingStaffOptions() {
+    var select = document.getElementById('existingStaffProfile');
+    var search = document.getElementById('existingStaffSearch');
+    if (!select || !search) return;
+    var query = search.value.trim().toLowerCase();
+    var selectedId = select.value;
+    var matches = existingStaffProfiles.filter(function(profile) {
+      return [profile.full_name, profile.username, profile.email].join(' ').toLowerCase().indexOf(query) !== -1;
+    });
+    select.innerHTML = '<option value="">' + (matches.length ? 'Select Existing Staff Member' : 'No matching staff members') + '</option>' + matches.map(function(profile) {
+      var roles = profile.responsibilities || [profile.role];
+      var additional = roles.filter(function(role) { return role !== profile.role; });
+      var detail = 'Primary: ' + subjectTeacherRoleLabel(profile.role) + (additional.length ? ' · Additional: ' + additional.map(subjectTeacherRoleLabel).join(', ') : '');
+      return '<option value="' + escapeManagementText(profile.id) + '" data-profile-id="' + escapeManagementText(profile.id) + '"' + (String(profile.id) === String(selectedId) ? ' selected' : '') + '>' + escapeManagementText(profile.full_name || profile.username || profile.email || 'Staff member') + ' — ' + escapeManagementText(detail) + ' — ' + escapeManagementText(profile.email || '') + '</option>';
+    }).join('');
+    updateExistingStaffDetails();
+  }
+  function updateExistingStaffDetails() {
+    var select = document.getElementById('existingStaffProfile');
+    var details = document.getElementById('existingStaffDetails');
+    if (!select || !details) return;
+    var profile = existingStaffProfiles.find(function(item) { return String(item.id) === String(select.value); });
+    if (!profile) { details.textContent = 'Select a staff member to view their account and responsibilities.'; return; }
+    var roles = profile.responsibilities || [profile.role];
+    var additional = roles.filter(function(role) { return role !== profile.role; });
+    details.innerHTML = '<strong>' + escapeManagementText(profile.full_name || 'Staff member') + '</strong><br>' +
+      'Username: ' + escapeManagementText(profile.username || '—') + ' · Email: ' + escapeManagementText(profile.email || '—') + '<br>' +
+      'Primary: ' + escapeManagementText(subjectTeacherRoleLabel(profile.role)) +
+      (additional.length ? ' · Additional: ' + escapeManagementText(additional.map(subjectTeacherRoleLabel).join(', ')) : '');
+  }
+  async function populateExistingStaffOptions() {
+    var select = document.getElementById('existingStaffProfile');
+    var error = document.getElementById('existingStaffLoadError');
+    if (!select || !error) return;
+    if (!supabaseClient || !authenticatedProfile || !authenticatedProfile.school_id) {
+      select.innerHTML = '<option value="">Authenticated school account required</option>';
+      error.textContent = 'An authenticated school account is required to load staff.';
+      error.classList.remove('hidden');
+      return;
+    }
+    try {
+      var result = await supabaseClient.from('profiles').select('id,school_id,full_name,username,email,phone,role,is_active')
+        .eq('school_id', authenticatedProfile.school_id).eq('is_active', true).order('full_name');
+      if (result.error) throw result.error;
+      var profiles = (result.data || []).filter(function(profile) { return profile.role !== 'student'; });
+      var ids = profiles.map(function(profile) { return profile.id; }).filter(Boolean);
+      var rolesByProfile = {};
+      if (ids.length) {
+        var rolesResult = await supabaseClient.from('profile_roles').select('profile_id,role').in('profile_id', ids);
+        if (rolesResult.error) throw rolesResult.error;
+        (rolesResult.data || []).forEach(function(item) {
+          if (!rolesByProfile[String(item.profile_id)]) rolesByProfile[String(item.profile_id)] = [];
+          rolesByProfile[String(item.profile_id)].push(item.role);
+        });
+      }
+      existingStaffProfiles = profiles.filter(function(profile) {
+        return (rolesByProfile[String(profile.id)] || []).indexOf('student') === -1;
+      }).map(function(profile) {
+        var responsibilities = [profile.role].concat(rolesByProfile[String(profile.id)] || []).filter(function(role, index, all) { return role && all.indexOf(role) === index; });
+        return Object.assign({}, profile, { responsibilities: responsibilities });
+      });
+      error.classList.add('hidden');
+      renderExistingStaffOptions();
+    } catch (loadError) {
+      select.innerHTML = '<option value="">Unable to load staff</option>';
+      error.textContent = loadError && loadError.message ? loadError.message : 'Could not load active staff profiles.';
+      error.classList.remove('hidden');
+    }
+  }
+  async function populateStClassOptions() {
+    var select = document.getElementById('newStArm');
+    if (!select) return;
+    select.innerHTML = '<option value="">Loading classes...</option>';
+    var result = await supabaseClient.from('classes').select('id,class_name')
+      .eq('school_id', authenticatedProfile.school_id).order('class_name');
+    if (result.error) {
+      availableSupabaseClasses = [];
+      select.innerHTML = '<option value="">Could not load classes</option>';
+      showToast(result.error.message || 'Could not load classes for this school.', 'error');
+      return;
+    }
+    availableSupabaseClasses = result.data || [];
+    select.innerHTML = '<option value="">Select a class</option>' + availableSupabaseClasses.map(function(item) {
+      return '<option value="' + escapeManagementText(item.id) + '">' + escapeManagementText(item.class_name) + '</option>';
+    }).join('');
+    renderStSubjectOptions();
+  }
   function renderStSubjectOptions() {
     var subjSelect = document.getElementById('newStSubject');
     var searchInput = document.getElementById('newStSubjectSearch');
     var classSelect = document.getElementById('newStArm');
     if (!subjSelect || !searchInput || !classSelect) return;
     var searchTerm = String(searchInput.value || '').trim().toLowerCase();
-    var isSeniorClass = /^SS/i.test(classSelect.value);
+    var selectedClass = availableSupabaseClasses.find(function(item) { return String(item.id) === String(classSelect.value); });
+    var isSeniorClass = /^SS/i.test(selectedClass ? selectedClass.class_name : '');
     var sectionSubjects = availableSupabaseSubjects.filter(function(item) {
       var name = String(item.name || '').trim().toLowerCase();
       var inBasicSection = basicCoreSubjects.concat(tradeSubjects).some(function(subject) { return subject.toLowerCase() === name; });
@@ -2712,6 +2824,18 @@ function renderMasters() {
     document.getElementById('newStSubject').value = '';
     renderStSubjectOptions();
   });
+  document.querySelectorAll('input[name="subjectTeacherAccountType"]').forEach(function(input) {
+    input.addEventListener('change', function() {
+      var isNew = this.value === 'new';
+      document.getElementById('existingStaffFields').classList.toggle('hidden', isNew);
+      document.getElementById('newSubjectTeacherFields').classList.toggle('hidden', !isNew);
+      document.getElementById('addStBtn').textContent = isNew ? 'Create Subject Teacher Account' : 'Assign Subject Teacher';
+    });
+  });
+  document.getElementById('existingStaffSearch').addEventListener('input', renderExistingStaffOptions);
+  document.getElementById('existingStaffProfile').addEventListener('change', updateExistingStaffDetails);
+  populateStClassOptions();
+  populateExistingStaffOptions();
   populateStSubjectOptions();
 
   var addBtn = document.getElementById('addFmBtn');
@@ -2787,15 +2911,25 @@ function renderMasters() {
 
   var addStBtn = document.getElementById('addStBtn');
   if (addStBtn) addStBtn.addEventListener('click', async function() {
-    var className = document.getElementById('newStArm').value;
+    var selectedAccountType = document.querySelector('input[name="subjectTeacherAccountType"]:checked');
+    var existingMode = !!selectedAccountType && selectedAccountType.value === 'existing';
+    var classId = document.getElementById('newStArm').value;
+    var assignedClass = availableSupabaseClasses.find(function(item) { return String(item.id) === String(classId); });
     var subjectId = document.getElementById('newStSubject').value;
     var selectedSubject = availableSupabaseSubjects.find(function(item) { return String(item.id) === String(subjectId); });
-    var name = document.getElementById('newStName').value.trim();
-    var email = document.getElementById('newStEmail').value.trim();
+    var existingProfileId = document.getElementById('existingStaffProfile').value;
+    var existingProfile = existingStaffProfiles.find(function(item) { return String(item.id) === String(existingProfileId); });
+    var name = existingMode ? (existingProfile && (existingProfile.full_name || existingProfile.username || existingProfile.email) || '') : document.getElementById('newStName').value.trim();
+    var username = existingMode ? (existingProfile && existingProfile.username || '') : document.getElementById('newStUsername').value.trim();
+    var email = existingMode ? (existingProfile && existingProfile.email || '') : document.getElementById('newStEmail').value.trim();
+    var phone = existingMode ? (existingProfile && existingProfile.phone || '') : document.getElementById('newStPhone').value.trim();
     var passwordInput = document.getElementById('newStPassword');
-    var password = passwordInput.value;
+    var password = existingMode ? '' : passwordInput.value;
+    if (!classId || !assignedClass) { showToast('Select a valid class.', 'error'); return; }
     if (!subjectId || !selectedSubject) { showToast('Please select a subject.', 'error'); return; }
-    if (!className || !name || !email || !password) { showToast('Fill all fields', 'error'); return; }
+    if (existingMode && (!existingProfileId || !existingProfile)) { showToast('Select an existing active staff member.', 'error'); return; }
+    if (!existingMode && (!name || !username || !email || !password)) { showToast('Full name, username, email and password are required for a new staff account.', 'error'); return; }
+    var className = assignedClass.class_name;
     var subject = selectedSubject.name;
     if (currentUser.type !== 'admin' || !authenticatedProfile || authenticatedProfile.role !== 'administrator' || authenticatedProfile.is_active !== true) {
       showToast('Only an authenticated active School Administrator can assign Subject Teachers.', 'error'); return;
@@ -2806,20 +2940,22 @@ function renderMasters() {
     addStBtn.disabled = true;
     addStBtn.textContent = 'Creating Subject Teacher...';
     try {
-      var assignedClass = await resolveSupabaseClass(className);
-      var result = await supabaseClient.functions.invoke('create-subject-teacher', {
-        body: {
-          school_id: authenticatedProfile.school_id,
-          full_name: name,
-          username: email,
-          email: email,
-          phone: '',
-          password: password,
-          class_id: assignedClass.id,
-          subject_id: subjectId,
-          academic_session_id: activeAcademicSession.id
-        }
-      });
+      var requestBody = {
+        school_id: authenticatedProfile.school_id,
+        class_id: assignedClass.id,
+        subject_id: subjectId,
+        academic_session_id: activeAcademicSession.id
+      };
+      if (existingMode) {
+        requestBody.existing_profile_id = existingProfile.id;
+      } else {
+        requestBody.full_name = name;
+        requestBody.username = username;
+        requestBody.email = email;
+        requestBody.phone = phone;
+        requestBody.password = password;
+      }
+      var result = await supabaseClient.functions.invoke('create-subject-teacher', { body: requestBody });
       if (result.error) {
         var functionErrorMessage = result.error.message || 'Subject Teacher creation failed.';
         if (result.error.context && typeof result.error.context.json === 'function') {
@@ -2838,18 +2974,23 @@ function renderMasters() {
       }
 
       subjectAssignments = subjectAssignments.filter(function(item) {
-        return !(String(item.teacherEmail || '').trim().toLowerCase() === email.toLowerCase() &&
-          String(item.className) === String(assignedClass.class_name) && String(item.subject) === String(subject));
+        var sameTeacher = existingMode
+          ? (String(item.teacherId || '') === String(existingProfile.id) || (email && String(item.teacherEmail || '').trim().toLowerCase() === email.toLowerCase()))
+          : String(item.teacherEmail || '').trim().toLowerCase() === email.toLowerCase();
+        return !(sameTeacher && String(item.className) === String(assignedClass.class_name) && String(item.subject) === String(subject));
       });
       subjectAssignments.push({
-        id: Date.now(), classId: assignedClass.id, className: assignedClass.class_name,
+        id: Date.now(), teacherId: existingMode ? existingProfile.id : '',
+        classId: assignedClass.id, className: assignedClass.class_name,
         subjectId: subjectId, subject: subject, teacherName: name,
         teacherEmail: email, activated: false
       });
       await saveAllData();
-      logActivity('Added subject teacher assignment', assignedClass.class_name + ' / ' + subject + ' / ' + name);
-      passwordInput.value = '';
-      showToast('Subject Teacher account created and assigned successfully.', 'success');
+      logActivity(existingMode ? 'Assigned subject teacher responsibility to existing staff' : 'Added subject teacher assignment', assignedClass.class_name + ' / ' + subject + ' / ' + name);
+      if (!existingMode) passwordInput.value = '';
+      showToast(existingMode
+        ? 'Subject Teacher assignment successful. ' + name + ' has been assigned to teach ' + subject + ' in ' + className + '.'
+        : 'Subject Teacher account created and assignment completed successfully.', 'success');
       renderMasters();
     } catch (error) {
       showToast(error && error.message ? error.message : 'Could not create or assign the Subject Teacher.', 'error');
