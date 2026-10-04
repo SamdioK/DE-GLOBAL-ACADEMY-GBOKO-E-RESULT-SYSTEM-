@@ -1923,7 +1923,7 @@ async function rejectChangeRequestForRectification(requestId) {
   });
 }
 
-async function openTeacherRectificationEditor(requestId) {
+async function openTeacherRectificationEditorLegacy(requestId) {
   var request = (studentDbState.requests || []).find(function(item) { return String(item.id) === String(requestId); });
   if (!request || String(request.status || '').toLowerCase() !== 'rejected_for_rectification') return;
   var fields = [['first_name','First Name'],['middle_name','Middle Name'],['last_name','Last Name'],['gender','Gender'],['date_of_birth','Date of Birth'],['guardian_name','Guardian Name'],['guardian_phone','Guardian Phone'],['guardian_email','Guardian Email']];
@@ -2030,6 +2030,404 @@ async function openTeacherRectificationEditor(requestId) {
     });
   } catch (error) {
     panel.innerHTML += '<p class="alert alert-error">Unable to load correction details: ' + escapeManagementText(error && error.message || 'Unknown error') + '</p>';
+  }
+}
+
+async function openTeacherRectificationEditor(requestId) {
+  var request = (studentDbState.requests || []).find(function(item) {
+    return String(item.id) === String(requestId);
+  });
+
+  if (!request || String(request.status || '').toLowerCase() !== 'rejected_for_rectification') {
+    return;
+  }
+
+  var fields = [
+    ['first_name', 'First Name'],
+    ['middle_name', 'Middle Name'],
+    ['last_name', 'Last Name'],
+    ['gender', 'Gender'],
+    ['date_of_birth', 'Date of Birth'],
+    ['guardian_name', 'Guardian Name'],
+    ['guardian_phone', 'Guardian Phone'],
+    ['guardian_email', 'Guardian Email']
+  ];
+
+  var panel = document.getElementById('correctionFields');
+  if (!panel) return;
+
+  panel.innerHTML =
+    '<div class="alert alert-error">' +
+      '<strong>Correction Requires Rectification</strong><br>' +
+      '<strong>Administrator\'s Reason:</strong> ' +
+      escapeManagementText(request.rejection_reason || 'No reason was provided.') +
+      '<br><strong>Correction Cycle:</strong> ' +
+      escapeManagementText(request.revision_number == null ? '—' : request.revision_number) +
+    '</div>' +
+    '<p style="margin:10px 0">Correct the proposed values below. This updates the same correction request.</p>' +
+    '<p class="alert alert-info">Loading the request\'s proposed values…</p>';
+
+  try {
+    var result = await supabaseClient
+      .from('student_change_request_items')
+      .select('*')
+      .eq('request_id', request.id);
+
+    if (result.error) throw result.error;
+
+    var items = result.data || [];
+    var itemByField = {};
+
+    items.forEach(function(item) {
+      itemByField[item.field_name] = item;
+    });
+
+    var sourceStudent = (studentDbState.official || [])
+      .map(function(item) {
+        return item.student;
+      })
+      .find(function(student) {
+        return String(student.id) === String(request.student_id);
+      }) || null;
+
+    if (!sourceStudent) {
+      var studentResult = await supabaseClient
+        .from('students')
+        .select(
+          'id,first_name,middle_name,last_name,gender,date_of_birth,guardian_name,guardian_phone,guardian_email'
+        )
+        .eq('school_id', authenticatedProfile.school_id)
+        .eq('id', request.student_id)
+        .maybeSingle();
+
+      if (studentResult.error) throw studentResult.error;
+
+      sourceStudent = studentResult.data || {};
+    }
+
+    panel.innerHTML =
+      '<div class="alert alert-error">' +
+        '<strong>Correction Requires Rectification</strong><br>' +
+        '<strong>Administrator\'s Reason:</strong> ' +
+        escapeManagementText(request.rejection_reason || 'No reason was provided.') +
+        '<br><strong>Correction Cycle:</strong> ' +
+        escapeManagementText(request.revision_number == null ? '—' : request.revision_number) +
+      '</div>' +
+
+      '<div class="grid grid-2">' +
+
+      fields.map(function(pair) {
+        var fieldName = pair[0];
+        var fieldLabel = pair[1];
+        var item = itemByField[fieldName];
+
+        var value = item
+          ? item.new_value
+          : (sourceStudent[fieldName] == null ? '' : sourceStudent[fieldName]);
+
+        return (
+          '<div class="input-group">' +
+            '<label for="rectify-' + fieldName + '">' +
+              fieldLabel +
+            '</label>' +
+            '<input ' +
+              'id="rectify-' + fieldName + '" ' +
+              'class="rectification-proposal" ' +
+              'data-field="' + fieldName + '" ' +
+              'value="' + escapeManagementText(value) + '">' +
+          '</div>'
+        );
+      }).join('') +
+
+      '</div>' +
+
+      '<div class="input-group">' +
+        '<label for="rectificationNoteInput">What was rectified? *</label>' +
+        '<textarea ' +
+          'id="rectificationNoteInput" ' +
+          'rows="3" ' +
+          'placeholder="Describe exactly what you corrected in response to the Administrator\'s instruction.">' +
+        '</textarea>' +
+      '</div>' +
+
+      '<div id="teacherRectificationStatus" role="status" aria-live="polite"></div>' +
+
+      '<button type="button" class="btn btn-success" id="resubmitRectificationBtn">' +
+        'Resubmit for Administrator Review' +
+      '</button>';
+
+    var button = panel.querySelector('#resubmitRectificationBtn');
+
+    if (!button) {
+      throw new Error('Resubmission button could not be created.');
+    }
+
+    button.onclick = async function(event) {
+      event.preventDefault();
+      event.stopPropagation();
+
+      var currentButton = event.currentTarget;
+      var status = panel.querySelector('#teacherRectificationStatus');
+      var noteInput = panel.querySelector('#rectificationNoteInput');
+
+      if (!status || !noteInput) {
+        return;
+      }
+
+      var guardKey = String(request.id);
+
+      /*
+       * Prevent duplicate submissions.
+       * This guard is deliberately checked before any database operation.
+       */
+      if (!studentDbState.activeResubmissions) {
+        studentDbState.activeResubmissions = {};
+      }
+
+      if (studentDbState.activeResubmissions[guardKey]) {
+        return;
+      }
+
+      var rectificationNote = String(noteInput.value || '').trim();
+
+      if (!rectificationNote) {
+        status.className = 'alert alert-error';
+        status.textContent =
+          'Describe what was rectified before resubmitting.';
+        return;
+      }
+
+      /*
+       * Collect the current values from the form.
+       * No database operation is performed while collecting them.
+       */
+      var inputs = Array.prototype.slice.call(
+        panel.querySelectorAll('.rectification-proposal')
+      );
+
+      var changes = inputs
+        .map(function(input) {
+          var fieldName = input.getAttribute('data-field');
+          var previous = itemByField[fieldName];
+
+          var oldValue = previous
+            ? String(previous.old_value == null ? '' : previous.old_value)
+            : String(
+                sourceStudent[fieldName] == null
+                  ? ''
+                  : sourceStudent[fieldName]
+              );
+
+          var newValue = String(input.value == null ? '' : input.value);
+
+          return {
+            field_name: fieldName,
+            old_value: oldValue,
+            new_value: newValue,
+            existing_id: previous ? previous.id : null
+          };
+        })
+        .filter(function(change) {
+          return change.new_value !== change.old_value;
+        });
+
+      if (!changes.length) {
+        status.className = 'alert alert-error';
+        status.textContent =
+          'Enter at least one changed correction value.';
+        return;
+      }
+
+      /*
+       * Lock this request immediately.
+       */
+      studentDbState.activeResubmissions[guardKey] = true;
+      currentButton.disabled = true;
+
+      status.className = 'alert alert-info';
+      status.textContent = 'Resubmitting correction…';
+
+      try {
+        /*
+         * Build the database operations without using a sequential
+         * database-writing loop.
+         */
+        var existingUpdates = changes
+          .filter(function(change) {
+            return !!change.existing_id;
+          })
+          .map(function(change) {
+            return supabaseClient
+              .from('student_change_request_items')
+              .update({
+                old_value: change.old_value,
+                new_value: change.new_value
+              })
+              .eq('id', change.existing_id)
+              .eq('request_id', request.id);
+          });
+
+        var newInserts = changes
+          .filter(function(change) {
+            return !change.existing_id;
+          })
+          .map(function(change) {
+            return supabaseClient
+              .from('student_change_request_items')
+              .insert({
+                request_id: request.id,
+                field_name: change.field_name,
+                old_value: change.old_value,
+                new_value: change.new_value
+              });
+          });
+
+        /*
+         * Run item updates/inserts together.
+         */
+        var itemResults = await Promise.all(
+          existingUpdates.concat(newInserts)
+        );
+
+        var itemError = itemResults.find(function(itemResult) {
+          return itemResult && itemResult.error;
+        });
+
+        if (itemError) {
+          throw itemError.error;
+        }
+
+        /*
+         * Determine obsolete items and remove them in ONE operation.
+         */
+        var retainedFieldNames = changes.map(function(change) {
+          return String(change.field_name);
+        });
+
+        var obsoleteIds = items
+          .filter(function(item) {
+            return (
+              item &&
+              item.id &&
+              retainedFieldNames.indexOf(String(item.field_name)) === -1
+            );
+          })
+          .map(function(item) {
+            return item.id;
+          });
+
+        if (obsoleteIds.length) {
+          var deletion = await supabaseClient
+            .from('student_change_request_items')
+            .delete()
+            .in('id', obsoleteIds)
+            .eq('request_id', request.id);
+
+          if (deletion.error) {
+            throw deletion.error;
+          }
+        }
+
+        /*
+         * IMPORTANT:
+         * The database RPC is called exactly ONCE.
+         */
+        var resubmitResult = await supabaseClient.rpc(
+          'resubmit_student_change_request',
+          {
+            p_request_id: request.id,
+            p_rectification_note: rectificationNote
+          }
+        );
+
+        if (resubmitResult.error) {
+          console.error(
+            'resubmit_student_change_request error:',
+            resubmitResult.error
+          );
+
+          throw resubmitResult.error;
+        }
+
+        var resubmitData = Array.isArray(resubmitResult.data)
+          ? resubmitResult.data[0]
+          : resubmitResult.data;
+
+        if (
+          resubmitData &&
+          (resubmitData.success === false || resubmitData.error)
+        ) {
+          throw new Error(
+            resubmitData.error ||
+            resubmitData.message ||
+            'Resubmission failed.'
+          );
+        }
+
+        /*
+         * SUCCESS:
+         * Do not immediately render the entire workspace from inside
+         * this click handler. Replace the editor with a success message.
+         */
+        panel.innerHTML =
+          '<div class="alert alert-success">' +
+            '<strong>Correction resubmitted successfully.</strong><br>' +
+            'The same correction request has been returned to the Administrator for review.' +
+          '</div>';
+
+        showToast(
+          'Correction resubmitted successfully.',
+          'success'
+        );
+
+        /*
+         * Refresh the request data after the successful transaction.
+         * This is deliberately separated from the submission operation.
+         */
+        try {
+          if (typeof loadFormMasterChangeRequests === 'function') {
+            await loadFormMasterChangeRequests();
+          }
+        } catch (refreshError) {
+          console.error(
+            'Correction request refresh failed:',
+            refreshError
+          );
+        }
+
+      } catch (error) {
+        console.error(
+          'Student correction resubmission failed:',
+          error
+        );
+
+        status.className = 'alert alert-error';
+        status.textContent =
+          'Unable to resubmit correction: ' +
+          (error && error.message
+            ? error.message
+            : 'Unknown error');
+
+        currentButton.disabled = false;
+
+      } finally {
+        /*
+         * Always release the submission lock.
+         */
+        delete studentDbState.activeResubmissions[guardKey];
+      }
+    };
+
+  } catch (error) {
+    panel.innerHTML =
+      '<p class="alert alert-error">' +
+        'Unable to load correction details: ' +
+        escapeManagementText(
+          error && error.message
+            ? error.message
+            : 'Unknown error'
+        ) +
+      '</p>';
   }
 }
 
