@@ -14,6 +14,11 @@
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: 'Segoe UI', Arial, sans-serif; background: #f5f5f5; }
+.subject-teacher-account-options { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; }
+.subject-teacher-account-option { display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px solid #d9def2; border-radius: 8px; background: #fff; color: #39446e; cursor: pointer; white-space: nowrap; }
+.subject-teacher-account-option:has(input:checked) { border-color: #667eea; background: #eef0ff; color: #394db6; box-shadow: 0 0 0 2px rgba(102,126,234,.12); }
+.subject-teacher-account-option input { accent-color: #667eea; }
+@media (max-width: 420px) { .subject-teacher-account-options { flex-wrap: wrap; } .subject-teacher-account-option { flex: 1 1 auto; justify-content: center; } }
 .login-container { min-height: 100vh; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; align-items: center; justify-content: center; padding: 20px; }
 .login-box { background: white; border-radius: 12px; padding: 40px; max-width: 480px; width: 100%; box-shadow: 0 10px 40px rgba(0,0,0,0.3); }
 .logo-section { text-align: center; margin-bottom: 30px; }
@@ -2641,7 +2646,7 @@ function renderMasters() {
   if (subjectAssignments.length > 0) html += '<button class="btn btn-danger" onclick="clearAllAssignments()">Clear All Subject Teachers</button>';
   html += '</div><p style="color:#666; font-size:13px; margin-bottom:15px;">Assign a teacher to a specific class arm and subject. Activate a slot to let that teacher log in and enter scores for only that subject.</p>';
   html += '<div style="background: #f9f9f9; padding: 15px; border-radius: 8px; margin-bottom: 20px;"><h3 style="margin: 0 0 15px 0; font-size: 16px;">Add Subject Teacher</h3>' +
-    '<div class="input-group"><label>Subject Teacher Account Type</label><div style="display:flex;gap:18px;flex-wrap:wrap"><label><input type="radio" name="subjectTeacherAccountType" value="existing" checked> Existing Staff Member</label><label><input type="radio" name="subjectTeacherAccountType" value="new"> New Staff Member</label></div></div>' +
+    '<div class="input-group"><label>Subject Teacher Account Type</label><div class="subject-teacher-account-options"><label class="subject-teacher-account-option"><input type="radio" name="subjectTeacherAccountType" value="existing" checked> Existing Staff Member</label><label class="subject-teacher-account-option"><input type="radio" name="subjectTeacherAccountType" value="new"> New Staff Member</label></div></div>' +
     '<div id="existingStaffFields"><div class="input-group"><label for="existingStaffSearch">Search existing staff</label><input type="search" id="existingStaffSearch" placeholder="Search staff name, username or email..."></div><div class="input-group"><label for="existingStaffProfile">Select Existing Staff Member</label><select id="existingStaffProfile"><option value="">Loading active staff...</option></select></div><div id="existingStaffDetails" class="alert alert-info">Select a staff member to view their account and responsibilities.</div><div id="existingStaffLoadError" class="hidden alert alert-error"></div></div>' +
     '<div class="grid grid-3"><div class="input-group"><label for="newStArm">Class</label><select id="newStArm">' + classArms.map(function(a) { return '<option value="' + escapeManagementText(a.name) + '">' + escapeManagementText(a.name) + '</option>'; }).join('') + '</select></div>' +
     '<div class="input-group" style="grid-column:1/-1;margin-bottom:0"><label for="newStSubjectSearch">Search Subject</label><input type="search" id="newStSubjectSearch" placeholder="Type subject name..." autocomplete="off" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px"></div>' +
