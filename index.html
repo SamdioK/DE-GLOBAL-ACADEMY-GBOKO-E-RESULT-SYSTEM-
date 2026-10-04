@@ -2405,53 +2405,51 @@ async function openTeacherRectificationEditor(requestId) {
       status.textContent = 'Resubmitting correction…';
 
       try {
-        /*
-         * Build the database operations without using a sequential
-         * database-writing loop.
-         */
-        var existingUpdates = changes
-          .filter(function(change) {
-            return !!change.existing_id;
-          })
-          .map(function(change) {
-            return supabaseClient
+        /* Save each proposed value and verify the database returned its row. */
+        for (var i = 0; i < changes.length; i++) {
+          var change = changes[i];
+
+          if (change.existing_id) {
+            var updateResult = await supabaseClient
               .from('student_change_request_items')
               .update({
                 old_value: change.old_value,
                 new_value: change.new_value
               })
               .eq('id', change.existing_id)
-              .eq('request_id', request.id);
-          });
+              .eq('request_id', request.id)
+              .select('id,request_id,field_name,old_value,new_value')
+              .maybeSingle();
 
-        var newInserts = changes
-          .filter(function(change) {
-            return !change.existing_id;
-          })
-          .map(function(change) {
-            return supabaseClient
+            if (updateResult.error) {
+              throw updateResult.error;
+            }
+
+            if (!updateResult.data) {
+              throw new Error(
+                'The existing correction item was not updated. Check the Form Master UPDATE permission/RLS policy.'
+              );
+            }
+          } else {
+            var insertResult = await supabaseClient
               .from('student_change_request_items')
               .insert({
                 request_id: request.id,
                 field_name: change.field_name,
                 old_value: change.old_value,
                 new_value: change.new_value
-              });
-          });
+              })
+              .select('id,request_id,field_name,old_value,new_value')
+              .single();
 
-        /*
-         * Run item updates/inserts together.
-         */
-        var itemResults = await Promise.all(
-          existingUpdates.concat(newInserts)
-        );
+            if (insertResult.error) {
+              throw insertResult.error;
+            }
 
-        var itemError = itemResults.find(function(itemResult) {
-          return itemResult && itemResult.error;
-        });
-
-        if (itemError) {
-          throw itemError.error;
+            if (!insertResult.data) {
+              throw new Error('The new correction item was not inserted.');
+            }
+          }
         }
 
         /*
@@ -2484,6 +2482,37 @@ async function openTeacherRectificationEditor(requestId) {
             throw deletion.error;
           }
         }
+
+        /* Confirm every proposed value is persisted before resubmission. */
+        var verifyResult = await supabaseClient
+          .from('student_change_request_items')
+          .select('id,request_id,field_name,old_value,new_value')
+          .eq('request_id', request.id);
+
+        if (verifyResult.error) {
+          throw verifyResult.error;
+        }
+
+        var savedItems = verifyResult.data || [];
+        changes.forEach(function(change) {
+          var saved = savedItems.find(function(item) {
+            return String(item.field_name) === String(change.field_name);
+          });
+
+          if (!saved) {
+            throw new Error(
+              'Correction item for ' + change.field_name + ' was not found after saving.'
+            );
+          }
+
+          if (String(saved.new_value || '') !== String(change.new_value || '')) {
+            throw new Error(
+              'The proposed value for ' + change.field_name +
+              ' was not saved correctly. Expected "' + change.new_value +
+              '" but the database contains "' + saved.new_value + '".'
+            );
+          }
+        });
 
         /*
          * IMPORTANT:
