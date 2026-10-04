@@ -1593,6 +1593,53 @@ function studentDbClean(value) {
   return String(value == null ? '' : value).trim().replace(/\s+/g, ' ');
 }
 
+function studentDbTodayIso() {
+  var date = new Date();
+  return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
+}
+
+function studentDbIsoDate(value) {
+  var text = studentDbClean(value);
+  if (!text) return '';
+  var iso = text.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (iso) return iso[1];
+  var local = text.match(/^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})$/);
+  return local ? local[3] + '-' + String(local[2]).padStart(2, '0') + '-' + String(local[1]).padStart(2, '0') : '';
+}
+
+function renderStudentGenderField(id, value, extraClass, fieldName) {
+  var current = String(value == null ? '' : value).trim();
+  if (current.toUpperCase() === 'M') current = 'Male';
+  if (current.toUpperCase() === 'F') current = 'Female';
+  return '<select id="' + escapeManagementText(id) + '" class="' + escapeManagementText(extraClass || '') + '"' + (fieldName ? ' data-field="' + escapeManagementText(fieldName) + '"' : '') + '>' +
+    '<option value=""' + (!current ? ' selected' : '') + '>Select Gender</option>' +
+    '<option value="Male"' + (current === 'Male' ? ' selected' : '') + '>Male</option>' +
+    '<option value="Female"' + (current === 'Female' ? ' selected' : '') + '>Female</option></select>';
+}
+
+function renderStudentDobField(id, value, extraClass, fieldName) {
+  return '<input type="date" id="' + escapeManagementText(id) + '" class="' + escapeManagementText(extraClass || '') + '"' +
+    (fieldName ? ' data-field="' + escapeManagementText(fieldName) + '"' : '') + ' value="' +
+    escapeManagementText(studentDbIsoDate(value)) + '" max="' + studentDbTodayIso() + '">';
+}
+
+function studentDbDobIsFuture(value) {
+  var iso = studentDbIsoDate(value);
+  return !!iso && iso > studentDbTodayIso();
+}
+
+function studentDbFieldValuesEqual(field, left, right) {
+  var a = String(left == null ? '' : left).trim();
+  var b = String(right == null ? '' : right).trim();
+  if (field === 'gender') {
+    if (a.toUpperCase() === 'M') a = 'Male';
+    if (a.toUpperCase() === 'F') a = 'Female';
+    if (b.toUpperCase() === 'M') b = 'Male';
+    if (b.toUpperCase() === 'F') b = 'Female';
+  }
+  return a === b;
+}
+
 function studentDbDate(value) {
   if (!value) return '';
   var date = new Date(value);
@@ -1949,9 +1996,9 @@ function renderStudentSubmitPanel() {
 }
 
 function renderFormMasterSubmissionList() {
-  return '<h3>My Student Submissions</h3><div style="overflow-x:auto"><table><thead><tr><th>Student</th><th>Class</th><th>Submitted</th><th>Status</th><th>Reason</th></tr></thead><tbody>' + studentDbState.importRows.map(function(row) {
+  return '<h3>My Student Submissions</h3><div style="overflow-x:auto"><table><thead><tr><th>Student</th><th>Class</th><th>Submitted</th><th>Status</th><th>Reason</th><th>Action</th></tr></thead><tbody>' + studentDbState.importRows.map(function(row) {
     var full = studentDbName(row);
-    return '<tr><td>' + escapeManagementText(full || '—') + '</td><td>' + escapeManagementText(studentDbClassLabel(row.class_id)) + '</td><td>' + escapeManagementText(studentDbDate(row.created_at)) + '</td><td>' + studentDbStatusBadge(row.status) + '</td><td>' + escapeManagementText(row.rejection_reason || '') + '</td></tr>';
+    return '<tr data-submission-id="' + escapeManagementText(row.id) + '"><td>' + escapeManagementText(full || '—') + '</td><td>' + escapeManagementText(studentDbClassLabel(row.class_id)) + '</td><td>' + escapeManagementText(studentDbDate(row.created_at)) + '</td><td>' + studentDbStatusBadge(row.status) + '</td><td>' + escapeManagementText(row.rejection_reason || '') + '</td><td><button type="button" class="btn btn-primary student-submission-view" data-id="' + escapeManagementText(row.id) + '">' + (String(row.status || '').toLowerCase() === 'pending' || String(row.status || '').toLowerCase() === 'rejected' ? 'View / Edit' : 'View') + '</button></td></tr>';
   }).join('') + '</tbody></table></div>';
 }
 
@@ -1985,6 +2032,14 @@ function renderAdminChangeRequests() {
 }
 
 function renderCorrectionPanel() {
+  var requests = studentDbState.requests || [];
+  var rows = requests.map(function(request) {
+    var status = String(request.status || '').toLowerCase();
+    var needsRectification = status === 'rejected_for_rectification';
+    var knownStudent = (studentDbState.official || []).map(function(item) { return item.student; }).find(function(student) { return String(student.id) === String(request.student_id); });
+    return '<tr><td>' + escapeManagementText(knownStudent ? studentDbName(knownStudent) : 'Student record') + '</td><td>' + escapeManagementText(studentChangeStatusLabel(status)) + '</td><td>' + escapeManagementText(request.revision_number == null ? '—' : request.revision_number) + '</td><td>' + (needsRectification ? '<div class="alert alert-error"><strong>Administrator\'s Reason:</strong> ' + escapeManagementText(request.rejection_reason || 'No reason was provided.') + '</div><button type="button" class="btn btn-primary rectify-change-request" data-id="' + escapeManagementText(request.id) + '">Rectify Correction</button> ' : '') + '<button type="button" class="btn" style="background:#eee" data-history-request="' + escapeManagementText(request.id) + '">View Correction History</button></td></tr>';
+  }).join('');
+  return '<h3>My Correction Requests</h3><div style="overflow-x:auto"><table><thead><tr><th>Student ID</th><th>Status</th><th>Correction Cycle</th><th>Details / Actions</th></tr></thead><tbody>' + (rows || '<tr><td colspan="4" style="color:#777">No correction requests submitted.</td></tr>') + '</tbody></table></div>';
   var requestRows = (studentDbState.requests || []).map(function(request) {
     var status = String(request.status || '').toLowerCase();
     var needsRectification = status === 'rejected_for_rectification';
@@ -2106,7 +2161,13 @@ async function openTeacherRectificationEditorLegacy(requestId) {
         var value = item ? item.new_value : (sourceStudent[pair[0]] || '');
         return '<div class="input-group"><label for="rectify-' + pair[0] + '">' + pair[1] + '</label><input id="rectify-' + pair[0] + '" class="rectification-proposal" data-field="' + pair[0] + '" value="' + escapeManagementText(value) + '"></div>';
       }).join('') + '</div><div class="input-group"><label for="rectificationNoteInput">What was rectified? *</label><textarea id="rectificationNoteInput" rows="3" placeholder="Describe exactly what you corrected in response to the Administrator\'s instruction."></textarea></div><div id="teacherRectificationStatus" role="status" aria-live="polite"></div><button type="button" class="btn btn-success" id="resubmitRectificationBtn">Resubmit for Administrator Review</button>';
+    var legacyGenderInput = panel.querySelector('.rectification-proposal[data-field="gender"]');
+    if (legacyGenderInput) legacyGenderInput.outerHTML = renderStudentGenderField('rectify-gender', sourceStudent.gender, 'rectification-proposal', 'gender');
+    var legacyDobInput = panel.querySelector('.rectification-proposal[data-field="date_of_birth"]');
+    if (legacyDobInput) legacyDobInput.outerHTML = renderStudentDobField('rectify-date_of_birth', sourceStudent.date_of_birth, 'rectification-proposal', 'date_of_birth');
     panel.querySelector('#resubmitRectificationBtn').addEventListener('click', async function() {
+      var proposedDob = panel.querySelector('[data-field="date_of_birth"]');
+      if (proposedDob && studentDbDobIsFuture(proposedDob.value)) { showToast('Date of Birth cannot be in the future.', 'error'); return; }
       var button = this;
       var requestId = request.id;
       var status = panel.querySelector('#teacherRectificationStatus');
@@ -2119,7 +2180,7 @@ async function openTeacherRectificationEditorLegacy(requestId) {
         var oldValue = previous ? String(previous.old_value == null ? '' : previous.old_value) : String(sourceStudent[input.dataset.field] == null ? '' : sourceStudent[input.dataset.field]);
         var newValue = String(input.value == null ? '' : input.value);
         return { field_name: input.dataset.field, old_value: oldValue, new_value: newValue, existing: previous || null };
-      }).filter(function(change) { return change.new_value !== change.old_value; });
+      }).filter(function(change) { return !studentDbFieldValuesEqual(change.field_name, change.new_value, change.old_value); });
       if (!changes.length) { status.className = 'alert alert-error'; status.textContent = 'Enter at least one changed correction value.'; return; }
       if (!studentDbState.activeResubmissions) studentDbState.activeResubmissions = {};
       studentDbState.activeResubmissions[guardKey] = true;
@@ -2282,16 +2343,16 @@ async function openTeacherRectificationEditor(requestId) {
           ? item.new_value
           : (sourceStudent[fieldName] == null ? '' : sourceStudent[fieldName]);
 
+        var fieldControl = fieldName === 'gender'
+          ? renderStudentGenderField('rectify-' + fieldName, value, 'rectification-proposal', fieldName)
+          : (fieldName === 'date_of_birth'
+            ? renderStudentDobField('rectify-' + fieldName, value, 'rectification-proposal', fieldName)
+            : '<input id="rectify-' + fieldName + '" class="rectification-proposal" data-field="' + fieldName + '" value="' + escapeManagementText(value) + '">');
+
         return (
           '<div class="input-group">' +
-            '<label for="rectify-' + fieldName + '">' +
-              fieldLabel +
-            '</label>' +
-            '<input ' +
-              'id="rectify-' + fieldName + '" ' +
-              'class="rectification-proposal" ' +
-              'data-field="' + fieldName + '" ' +
-              'value="' + escapeManagementText(value) + '">' +
+            '<label for="rectify-' + fieldName + '">' + fieldLabel + '</label>' +
+            fieldControl +
           '</div>'
         );
       }).join('') +
@@ -2346,6 +2407,12 @@ async function openTeacherRectificationEditor(requestId) {
       }
 
       var rectificationNote = String(noteInput.value || '').trim();
+      var proposedDob = panel.querySelector('[data-field="date_of_birth"]');
+      if (proposedDob && studentDbDobIsFuture(proposedDob.value)) {
+        status.className = 'alert alert-error';
+        status.textContent = 'Date of Birth cannot be in the future.';
+        return;
+      }
 
       if (!rectificationNote) {
         status.className = 'alert alert-error';
@@ -2385,7 +2452,7 @@ async function openTeacherRectificationEditor(requestId) {
           };
         })
         .filter(function(change) {
-          return change.new_value !== change.old_value;
+          return !studentDbFieldValuesEqual(change.field_name, change.new_value, change.old_value);
         });
 
       if (!changes.length) {
@@ -2696,12 +2763,148 @@ async function uploadStudentExcel(file) {
   return rows;
 }
 
+function bindFormMasterSubmissionEvents(root) {
+  root.querySelectorAll('.student-submission-view').forEach(function(button) {
+    button.addEventListener('click', function() {
+      var submission = studentDbState.importRows.find(function(item) { return String(item.id) === String(button.dataset.id); });
+      if (!submission) return;
+      var clickedRow = button.closest('tr');
+      var oldDetail = root.querySelector('#studentSubmissionDetailRow');
+      if (oldDetail) oldDetail.remove();
+      var detailRow = document.createElement('tr');
+      detailRow.id = 'studentSubmissionDetailRow';
+      var detailCell = document.createElement('td');
+      detailCell.colSpan = 6;
+      var status = String(submission.status || 'pending').toLowerCase();
+      var canEdit = currentUser.type === 'formmaster' && (status === 'pending' || status === 'rejected');
+      var detailFields = '<div class="grid grid-2"><p><strong>Full Name:</strong> ' + escapeManagementText(studentDbName(submission) || '—') + '</p>' +
+        '<p><strong>Student Number / Admission Number:</strong> ' + escapeManagementText(submission.student_number || submission.admission_number || submission.sid || 'Not assigned') + '</p>' +
+        '<p><strong>Class:</strong> ' + escapeManagementText(studentDbClassLabel(submission.class_id)) + '</p>' +
+        '<p><strong>Gender:</strong> ' + escapeManagementText(submission.gender || '—') + '</p>' +
+        '<p><strong>Date of Birth:</strong> ' + escapeManagementText(studentDbDate(submission.date_of_birth) || '—') + '</p>' +
+        '<p><strong>Guardian Name:</strong> ' + escapeManagementText(submission.guardian_name || '—') + '</p>' +
+        '<p><strong>Guardian Phone:</strong> ' + escapeManagementText(submission.guardian_phone || '—') + '</p>' +
+        '<p><strong>Guardian Email:</strong> ' + escapeManagementText(submission.guardian_email || '—') + '</p>' +
+        '<p><strong>Submission Type:</strong> ' + escapeManagementText(submission.submission_type || 'manual') + '</p>' +
+        '<p><strong>Date Submitted:</strong> ' + escapeManagementText(studentDbDate(submission.created_at) || '—') + '</p>' +
+        '<p><strong>Status:</strong> ' + studentDbStatusBadge(submission.status) + '</p></div>';
+      detailCell.innerHTML = '<div class="card" style="margin:8px 0"><h4>Student Details</h4>' + detailFields +
+        (canEdit ? '<div class="input-group"><label for="submissionFullNameEdit">Edit Full Name</label><input id="submissionFullNameEdit" value="' + escapeManagementText(submission.full_name || studentDbName(submission)) + '"></div><button type="button" class="btn btn-success" id="saveSubmissionCorrectionBtn">Save / Submit Correction</button> ' : '') +
+        '<button type="button" class="btn" style="background:#eee" id="closeSubmissionDetailBtn">Close</button><div id="submissionDetailStatus" role="status" aria-live="polite"></div></div>';
+      detailRow.appendChild(detailCell);
+      clickedRow.parentNode.insertBefore(detailRow, clickedRow.nextSibling);
+      detailCell.querySelector('#closeSubmissionDetailBtn').addEventListener('click', function() { detailRow.remove(); });
+      var saveButton = detailCell.querySelector('#saveSubmissionCorrectionBtn');
+      if (!saveButton) return;
+      saveButton.addEventListener('click', async function() {
+        var newName = studentDbClean(detailCell.querySelector('#submissionFullNameEdit').value);
+        var message = detailCell.querySelector('#submissionDetailStatus');
+        if (!newName) { message.className = 'alert alert-error'; message.textContent = 'Student name is required.'; return; }
+        if (String(submission.status || '').toLowerCase() !== 'pending' && String(submission.status || '').toLowerCase() !== 'rejected') {
+          message.className = 'alert alert-error'; message.textContent = 'This submission is no longer editable.'; return;
+        }
+        saveButton.disabled = true;
+        try {
+          var update = await supabaseClient.from('student_import_rows').update({ full_name: newName })
+            .eq('id', submission.id).eq('status', submission.status).select('id,full_name,status').maybeSingle();
+          if (update.error) throw update.error;
+          if (!update.data) throw new Error('The submission was not updated. Check the Form Master update permission or submission status.');
+          submission.full_name = update.data.full_name;
+          submission.status = update.data.status;
+          message.className = 'alert alert-success';
+          message.textContent = 'Student submission correction saved.';
+          showToast('Student submission correction saved.', 'success');
+          await loadFormMasterSubmissions();
+          renderStudentDatabaseWorkspace();
+        } catch (error) {
+          message.className = 'alert alert-error';
+          message.textContent = error && error.message ? error.message : 'Unable to save this correction.';
+          saveButton.disabled = false;
+        }
+      });
+    });
+  });
+}
+
+function openInlineStudentCorrection(root, student) {
+  if (!root || !student || currentUser.type !== 'formmaster') return;
+  var clickedRow = Array.from(root.querySelectorAll('.student-correction-start')).find(function(button) {
+    return String(button.dataset.student) === String(student.id);
+  });
+  if (!clickedRow) return;
+  var sourceRow = clickedRow.closest('tr');
+  var previous = root.querySelector('#studentInlineCorrectionRow');
+  if (previous) previous.remove();
+  var row = document.createElement('tr');
+  row.id = 'studentInlineCorrectionRow';
+  var cell = document.createElement('td');
+  cell.colSpan = 8;
+  var fields = [['first_name','First Name'],['middle_name','Middle Name'],['last_name','Last Name'],['gender','Gender'],['date_of_birth','Date of Birth'],['guardian_name','Guardian Name'],['guardian_phone','Guardian Phone'],['guardian_email','Guardian Email']];
+  var controls = fields.map(function(pair) {
+    var field = pair[0];
+    var value = student[field] == null ? '' : student[field];
+    var control = field === 'gender' ? renderStudentGenderField('inline-correction-' + field, value, 'inline-correction-proposal', field) :
+      (field === 'date_of_birth' ? renderStudentDobField('inline-correction-' + field, value, 'inline-correction-proposal', field) :
+      '<input class="inline-correction-proposal" data-field="' + field + '" value="' + escapeManagementText(value) + '">');
+    return '<div class="input-group"><label for="inline-correction-' + field + '">' + pair[1] + '</label>' + control + '</div>';
+  }).join('');
+  cell.innerHTML = '<div class="card" style="margin:8px 0"><h4>Request Student Correction</h4><p><strong>Student:</strong> ' + escapeManagementText(studentDbName(student)) + ' · <strong>Class:</strong> ' + escapeManagementText(studentDbClassLabel(student.class_id || studentDbState.activeClassId)) + '</p><div class="grid grid-2">' + controls + '</div><div class="input-group"><label for="inlineCorrectionReason">Reason for correction</label><textarea id="inlineCorrectionReason" rows="2"></textarea></div><div id="inlineCorrectionStatus" role="status" aria-live="polite"></div><button type="button" class="btn btn-success" id="submitInlineCorrectionBtn">Submit Correction Request</button> <button type="button" class="btn" style="background:#eee" id="closeInlineCorrectionBtn">Close</button></div>';
+  row.appendChild(cell);
+  sourceRow.parentNode.insertBefore(row, sourceRow.nextSibling);
+  cell.querySelector('#closeInlineCorrectionBtn').addEventListener('click', function() { row.remove(); });
+  cell.querySelector('#submitInlineCorrectionBtn').addEventListener('click', async function() {
+    var status = cell.querySelector('#inlineCorrectionStatus');
+    var reason = studentDbClean(cell.querySelector('#inlineCorrectionReason').value);
+    var proposedDob = cell.querySelector('[data-field="date_of_birth"]');
+    if (proposedDob && studentDbDobIsFuture(proposedDob.value)) { status.className = 'alert alert-error'; status.textContent = 'Date of Birth cannot be in the future.'; return; }
+    var changes = Array.from(cell.querySelectorAll('.inline-correction-proposal')).map(function(input) {
+      var key = input.dataset.field;
+      return { field_name: key, old_value: String(student[key] == null ? '' : student[key]), new_value: String(input.value == null ? '' : input.value).trim() };
+    }).filter(function(change) { return !studentDbFieldValuesEqual(change.field_name, change.new_value, change.old_value); });
+    if (!reason) { status.className = 'alert alert-error'; status.textContent = 'Enter a reason for the correction request.'; return; }
+    if (!changes.length) { status.className = 'alert alert-error'; status.textContent = 'No changes were entered.'; return; }
+    this.disabled = true;
+    try {
+      var requestResult = await supabaseClient.from('student_change_requests').insert({ school_id: authenticatedProfile.school_id, student_id: student.id, submitted_by: authenticatedProfile.id, reason: reason, status: 'pending' }).select('id').single();
+      if (requestResult.error) throw requestResult.error;
+      var itemsResult = await supabaseClient.from('student_change_request_items').insert(changes.map(function(change) { return { request_id: requestResult.data.id, field_name: change.field_name, old_value: change.old_value, new_value: change.new_value }; }));
+      if (itemsResult.error) throw itemsResult.error;
+      var historyResult = await supabaseClient.rpc('record_student_change_submission', { p_request_id: requestResult.data.id });
+      if (historyResult.error) throw historyResult.error;
+      var historyData = Array.isArray(historyResult.data) ? historyResult.data[0] : historyResult.data;
+      if (historyData && (historyData.success === false || historyData.error)) throw new Error(historyData.error || historyData.message || 'Submission history could not be recorded.');
+      status.className = 'alert alert-success';
+      status.textContent = 'Correction request submitted for Administrator approval.';
+      showToast(status.textContent, 'success');
+      await loadFormMasterChangeRequests();
+    } catch (error) {
+      status.className = 'alert alert-error';
+      status.textContent = error && error.message ? error.message : 'Unable to submit correction request.';
+      this.disabled = false;
+    }
+  });
+}
+
 function bindStudentDatabaseEvents(root) {
+  bindFormMasterSubmissionEvents(root);
   root.querySelectorAll('[data-history-request]').forEach(function(button) {
     button.addEventListener('click', function() { showStudentChangeHistory(button.getAttribute('data-history-request')); });
   });
   root.querySelectorAll('.rectify-change-request').forEach(function(button) {
-    button.addEventListener('click', function() { openTeacherRectificationEditor(button.getAttribute('data-id')); });
+    button.addEventListener('click', function() {
+      var requestId = button.getAttribute('data-id');
+      var previous = root.querySelector('#studentRectificationInlineRow');
+      if (previous) previous.remove();
+      var detailRow = document.createElement('tr');
+      detailRow.id = 'studentRectificationInlineRow';
+      var detailCell = document.createElement('td');
+      detailCell.colSpan = 4;
+      detailCell.innerHTML = '<div id="correctionFields"></div><button type="button" class="btn" style="background:#eee;margin:8px 0" id="closeInlineRectificationBtn">Close Rectification</button>';
+      detailRow.appendChild(detailCell);
+      button.closest('tr').parentNode.insertBefore(detailRow, button.closest('tr').nextSibling);
+      detailCell.querySelector('#closeInlineRectificationBtn').addEventListener('click', function() { detailRow.remove(); });
+      openTeacherRectificationEditor(requestId);
+    });
   });
   var classSelect = root.querySelector('#studentDbClass');
   if (classSelect) classSelect.addEventListener('change', async function() {
@@ -2887,7 +3090,12 @@ function bindStudentDatabaseEvents(root) {
       catch (error) { studentDbError(error, 'Unable to reject student.'); this.disabled = false; }
     });
   }); });
-  root.querySelectorAll('.student-correction-start').forEach(function(button) { button.addEventListener('click', function() { studentDbState.view = 'corrections'; renderStudentDatabaseWorkspace(); var select = document.getElementById('correctionStudent'); if (select) { select.value = button.dataset.student; select.dispatchEvent(new Event('change')); } }); });
+  root.querySelectorAll('.student-correction-start').forEach(function(button) {
+    button.addEventListener('click', function() {
+      var record = studentDbState.official.map(function(item) { return item.student; }).find(function(item) { return String(item.id) === String(button.dataset.student); });
+      if (record) openInlineStudentCorrection(root, record);
+    });
+  });
   var correctionSelect = root.querySelector('#correctionStudent');
   if (correctionSelect) correctionSelect.addEventListener('change', function() {
     var item = studentDbState.official.find(function(record) { return String(record.student.id) === String(this.value); }.bind(this));
@@ -2896,8 +3104,14 @@ function bindStudentDatabaseEvents(root) {
     var student = item.student;
     var keys = [['first_name','First Name'],['middle_name','Middle Name'],['last_name','Last Name'],['gender','Gender'],['date_of_birth','Date of Birth'],['guardian_name','Guardian Name'],['guardian_phone','Guardian Phone'],['guardian_email','Guardian Email']];
     fields.innerHTML = '<div class="grid grid-2">' + keys.map(function(pair) { return '<div class="input-group"><label>' + pair[1] + ' — current: ' + escapeManagementText(student[pair[0]] || '—') + '</label><input class="correction-proposal" data-field="' + pair[0] + '" value="' + escapeManagementText(student[pair[0]] || '') + '"></div>'; }).join('') + '</div><button class="btn btn-success" id="submitCorrectionBtn">Submit Correction Request</button>';
+    var genderInput = fields.querySelector('.correction-proposal[data-field="gender"]');
+    if (genderInput) genderInput.outerHTML = renderStudentGenderField('correction-gender', student.gender, 'correction-proposal', 'gender');
+    var dobInput = fields.querySelector('.correction-proposal[data-field="date_of_birth"]');
+    if (dobInput) dobInput.outerHTML = renderStudentDobField('correction-date_of_birth', student.date_of_birth, 'correction-proposal', 'date_of_birth');
     fields.querySelector('#submitCorrectionBtn').addEventListener('click', async function() {
-      var changes = Array.from(fields.querySelectorAll('.correction-proposal')).map(function(input) { return { field_name: input.dataset.field, old_value: String(student[input.dataset.field] || ''), new_value: studentDbClean(input.value) }; }).filter(function(change) { return change.new_value !== change.old_value; });
+      var proposedDob = fields.querySelector('[data-field="date_of_birth"]');
+      if (proposedDob && studentDbDobIsFuture(proposedDob.value)) { showToast('Date of Birth cannot be in the future.', 'error'); return; }
+      var changes = Array.from(fields.querySelectorAll('.correction-proposal')).map(function(input) { return { field_name: input.dataset.field, old_value: String(student[input.dataset.field] || ''), new_value: studentDbClean(input.value) }; }).filter(function(change) { return !studentDbFieldValuesEqual(change.field_name, change.new_value, change.old_value); });
       if (!changes.length) { showToast('No changes were entered.', 'info'); return; }
       this.disabled = true;
       try {
@@ -4410,6 +4624,11 @@ function renderInput() {
   var importCard = '<div class="card dashed-box"><h2 style="margin-bottom: 10px;">📥 Bulk Import Results from Excel</h2><p style="color: #555; margin-bottom: 15px; font-size: 13px;">Download the template, fill it in Microsoft Excel (or Google Sheets), then upload it here to add many students to <strong>' + selectedClass + '</strong> at once.</p><div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 15px;"><button class="btn btn-primary" onclick="downloadImportTemplate()">⬇ Download Excel Template</button></div><div class="input-group"><label>Upload Completed Excel File (.xlsx)</label><input type="file" id="excelImportFile" accept=".xlsx,.xls"></div><button class="btn btn-success" id="importExcelBtn">Import Students from Excel</button><p id="importStatus" style="margin-top: 10px; font-size: 12px; color: #666;"></p></div>';
 
   document.getElementById('inputTab').innerHTML = manualForm + rosterCard + importCard;
+  var legacyDobDay = document.getElementById('dobDay');
+  if (legacyDobDay) {
+    var dobGroup = legacyDobDay.closest('.input-group');
+    dobGroup.innerHTML = '<label for="studentDob">Date of Birth *</label>' + renderStudentDobField('studentDob', '', '');
+  }
   var subadminArmSelect = document.getElementById('subadminInputArm');
   if (subadminArmSelect) subadminArmSelect.addEventListener('change', function() { window.__subAdminInputArm = this.value; renderInput(); });
 
@@ -4441,9 +4660,7 @@ function renderInput() {
       renderScoreInputs();
     } catch (error) { showToast(error.message || 'Could not load assessment configuration for this term.', 'error'); }
   });
-  document.getElementById('dobDay').addEventListener('change', calculateAge);
-  document.getElementById('dobMonth').addEventListener('change', calculateAge);
-  document.getElementById('dobYear').addEventListener('change', calculateAge);
+  document.getElementById('studentDob').addEventListener('change', calculateAge);
   document.getElementById('subjectSearch').addEventListener('input', renderSubjectList);
   var tradeSelect = document.getElementById('tradeSubjectSelect');
   if (tradeSelect) tradeSelect.addEventListener('change', function() { handleTradeSubjectChange(this.value); });
@@ -4496,17 +4713,14 @@ function updateAdmissionNumber() {
 }
 
 function calculateAge() {
-  var day = document.getElementById('dobDay').value;
-  var month = document.getElementById('dobMonth').value;
-  var year = document.getElementById('dobYear').value;
-  if (day && month && year) {
-    var dob = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
-    var today = new Date();
-    var age = today.getFullYear() - dob.getFullYear();
-    var monthDiff = today.getMonth() - dob.getMonth();
-    if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < dob.getDate())) age--;
-    document.getElementById('age').value = age;
-  }
+  var value = document.getElementById('studentDob') && document.getElementById('studentDob').value;
+  if (!value) { document.getElementById('age').value = ''; return; }
+  var dob = new Date(value + 'T00:00:00');
+  var today = new Date();
+  var age = today.getFullYear() - dob.getFullYear();
+  var monthDiff = today.getMonth() - dob.getMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < dob.getDate())) age--;
+  document.getElementById('age').value = age;
 }
 
 function renderSubjectList() {
@@ -4658,8 +4872,9 @@ async function saveStudent() {
   if (currentUser.type === 'subadmin' && !hasSubAdminPermission('enterResults') && !hasSubAdminPermission('editResults')) { showToast('You do not have permission to enter results', 'error'); return; }
   var studentName = document.getElementById('studentName').value;
   var admNo = document.getElementById('admNo').value;
-  var dob = document.getElementById('dobDay').value + '/' + document.getElementById('dobMonth').value + '/' + document.getElementById('dobYear').value;
+  var dob = document.getElementById('studentDob').value;
   var age = document.getElementById('age').value;
+  if (studentDbDobIsFuture(dob)) { showToast('Date of Birth cannot be in the future.', 'error'); return; }
   var sex = document.getElementById('sex').value;
   var term = document.getElementById('term').value;
   var formMasterComment = document.getElementById('formMasterComment').value;
@@ -4747,9 +4962,7 @@ async function saveStudent() {
 function clearForm() {
   document.getElementById('studentName').value = '';
   document.getElementById('admNo').value = '';
-  document.getElementById('dobDay').value = '';
-  document.getElementById('dobMonth').value = '';
-  document.getElementById('dobYear').value = '';
+  document.getElementById('studentDob').value = '';
   document.getElementById('age').value = '';
   document.getElementById('sex').value = '';
   document.getElementById('term').value = '';
