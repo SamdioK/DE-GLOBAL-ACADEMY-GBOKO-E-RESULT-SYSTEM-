@@ -508,6 +508,7 @@ function setupEventListeners() {
   if (portalModal) portalModal.addEventListener('click', function(e) { if (e.target === portalModal) closePublicPortal(); });
   if (supabaseClient) supabaseClient.auth.onAuthStateChange(function(event) {
     if (event === 'SIGNED_OUT' && currentUser) {
+      stopStudentCorrectionRealtime();
       authenticatedProfile = null;
       currentUser = null;
       document.getElementById('loginContainer').style.display = 'flex';
@@ -724,7 +725,9 @@ async function handleSupabaseLogin(userType, errorDiv) {
       currentUser.permissions = subadmin && subadmin.permissions || {};
     }
     showApp();
+    startStudentCorrectionRealtime();
   } catch (error) {
+    stopStudentCorrectionRealtime();
     if (supabaseClient) await supabaseClient.auth.signOut();
     authenticatedProfile = null;
     errorDiv.textContent = error && error.message ? error.message : 'Supabase sign-in failed. Check your credentials and account profile.';
@@ -850,6 +853,7 @@ async function handleLogin() {
 }
 
 async function handleLogout() {
+  stopStudentCorrectionRealtime();
   currentUser = null;
   authenticatedProfile = null;
   if (supabaseClient) { try { await supabaseClient.auth.signOut(); } catch (error) {} }
@@ -1398,7 +1402,174 @@ function renderStudentResults() {
 }
 
 // ===================== SUPABASE STUDENT DATABASE =====================
-var studentDbState = { classes: [], assignedClasses: [], official: [], pending: [], requests: [], importRows: [], activeClassId: '', view: 'official', officialPanelMinimized: false, officialPanelClosed: false, draftRows: [], existingStudentSearchResults: [], selectedExistingStudentId: '', activeResubmissions: {} };
+var studentDbState = { classes: [], assignedClasses: [], official: [], pending: [], requests: [], importRows: [], activeClassId: '', view: 'official', officialPanelMinimized: false, officialPanelClosed: false, draftRows: [], existingStudentSearchResults: [], selectedExistingStudentId: '', activeResubmissions: {}, activeChangeReviewRequestId: null };
+var studentCorrectionRealtimeChannel = null;
+var studentCorrectionRealtimeRefreshing = false;
+var studentCorrectionRealtimeQueued = false;
+
+function stopStudentCorrectionRealtime() {
+  if (studentCorrectionRealtimeChannel && supabaseClient) {
+    try {
+      supabaseClient.removeChannel(studentCorrectionRealtimeChannel);
+    } catch (error) {
+      console.warn('Unable to remove student correction realtime channel:', error);
+    }
+  }
+  studentCorrectionRealtimeChannel = null;
+}
+
+function startStudentCorrectionRealtime() {
+  if (!supabaseClient || !authenticatedProfile || !currentUser) return;
+  if (currentUser.type !== 'admin' && currentUser.type !== 'formmaster') return;
+  if (studentCorrectionRealtimeChannel) return;
+
+  var schoolId = authenticatedProfile.school_id;
+  var channelName = 'student-correction-realtime-' + String(authenticatedProfile.id) + '-' + Date.now();
+  var channel = supabaseClient.channel(channelName)
+    .on('postgres_changes', {
+      event: '*', schema: 'public', table: 'student_change_requests',
+      filter: 'school_id=eq.' + schoolId
+    }, function(payload) {
+      queueStudentCorrectionRealtimeEvent(payload);
+    })
+    .on('postgres_changes', {
+      event: '*', schema: 'public', table: 'student_change_request_items'
+    }, function(payload) {
+      queueStudentCorrectionRealtimeEvent(payload);
+    })
+    .subscribe(function(status) {
+      console.log('Student correction realtime status:', status);
+    });
+
+  studentCorrectionRealtimeChannel = channel;
+}
+
+var studentCorrectionRealtimeTimers = {};
+
+function queueStudentCorrectionRealtimeEvent(payload) {
+  var changedRequestId = null;
+  if (payload && payload.new && payload.new.request_id) changedRequestId = payload.new.request_id;
+  if (!changedRequestId && payload && payload.old && payload.old.request_id) changedRequestId = payload.old.request_id;
+  if (!changedRequestId && payload && payload.new && payload.new.id) changedRequestId = payload.new.id;
+  if (!changedRequestId && payload && payload.old && payload.old.id) changedRequestId = payload.old.id;
+  if (!changedRequestId) {
+    handleStudentCorrectionRealtimeEvent(payload);
+    return;
+  }
+
+  var timerKey = String(changedRequestId);
+  clearTimeout(studentCorrectionRealtimeTimers[timerKey]);
+  studentCorrectionRealtimeTimers[timerKey] = setTimeout(function() {
+    delete studentCorrectionRealtimeTimers[timerKey];
+    handleStudentCorrectionRealtimeEvent(payload);
+  }, 150);
+}
+
+async function handleStudentCorrectionRealtimeEvent(payload) {
+  if (!currentUser || !authenticatedProfile) return;
+  if (currentUser.type !== 'admin' && currentUser.type !== 'formmaster') return;
+
+  // Retain events that arrive while a refresh is in progress; item updates
+  // can arrive before the request's final status update from the resubmission RPC.
+  studentCorrectionRealtimeQueued = true;
+  if (studentCorrectionRealtimeRefreshing) return;
+  studentCorrectionRealtimeRefreshing = true;
+
+  try {
+    while (studentCorrectionRealtimeQueued) {
+      studentCorrectionRealtimeQueued = false;
+      try {
+        if (currentUser.type === 'admin') {
+          var activeReviewId = studentDbState.activeChangeReviewRequestId;
+          await loadStudentChangeRequests();
+          if (studentDbState.view === 'requests' && document.getElementById('studentDbWorkspace')) {
+            if (activeReviewId) {
+              await refreshOpenAdminCorrectionReview(activeReviewId);
+            } else {
+              renderStudentDatabaseWorkspace();
+            }
+          }
+        } else if (currentUser.type === 'formmaster') {
+          await loadFormMasterChangeRequests();
+          var activeEditor = document.getElementById('resubmitRectificationBtn') || document.querySelector('.rectification-proposal');
+          if (!activeEditor && studentDbState.view === 'corrections' && document.getElementById('studentDbWorkspace')) {
+            renderStudentDatabaseWorkspace();
+          }
+        }
+      } catch (error) {
+        console.error('Student correction realtime refresh failed:', error);
+      }
+    }
+  } finally {
+    studentCorrectionRealtimeRefreshing = false;
+  }
+}
+
+async function fetchLatestStudentCorrectionReview(requestId) {
+  if (!requestId || !supabaseClient || !authenticatedProfile) return null;
+
+  var requestResult = await supabaseClient.from('student_change_requests').select('*')
+    .eq('id', requestId).eq('school_id', authenticatedProfile.school_id).maybeSingle();
+  if (requestResult.error) throw requestResult.error;
+  if (!requestResult.data) return null;
+
+  var itemsResult = await supabaseClient.from('student_change_request_items').select('*')
+    .eq('request_id', requestId).order('created_at', { ascending: true });
+  if (itemsResult.error) throw itemsResult.error;
+
+  return { request: requestResult.data, items: itemsResult.data || [] };
+}
+
+async function refreshOpenAdminCorrectionReview(requestId) {
+  var latest = await fetchLatestStudentCorrectionReview(requestId);
+  if (!latest) return;
+
+  var request = latest.request;
+  var items = latest.items;
+  var workspace = document.getElementById('studentDbWorkspace');
+  if (!workspace) return;
+  var reviewRow = workspace.querySelector('#studentChangeReviewRow');
+  if (!reviewRow) return;
+  var detailCell = reviewRow.querySelector('td');
+  if (!detailCell) return;
+
+  var rows = items.map(function(item) {
+    return '<tr><td>' + escapeManagementText(item.field_name || '') + '</td><td>' +
+      escapeManagementText(item.old_value == null ? '' : item.old_value) + '</td><td><strong>' +
+      escapeManagementText(item.new_value == null ? '' : item.new_value) + '</strong></td></tr>';
+  }).join('');
+  var status = String(request.status || '').toLowerCase();
+
+  detailCell.innerHTML = '<div class="card"><h4>Proposed Student Changes — Cycle ' +
+    escapeManagementText(request.revision_number == null ? '—' : request.revision_number) +
+    '</h4><div style="margin-bottom:10px"><strong>Status:</strong> ' + escapeManagementText(request.status || '') +
+    '</div><div style="overflow-x:auto"><table><thead><tr><th>Field</th><th>Old Value</th><th>Proposed Value</th></tr></thead><tbody>' +
+    (rows || '<tr><td colspan="3">No proposed changes found.</td></tr>') +
+    '</tbody></table></div>' +
+    (status === 'pending' ? '<button type="button" class="btn btn-success" id="approveChangeBtn">Approve</button> <button type="button" class="btn btn-danger" id="rejectChangeBtn">Reject for Rectification</button> ' : '') +
+    '<button type="button" class="btn" id="viewHistoryFromReview" style="background:#eee">View Correction History</button> ' +
+    '<button type="button" class="btn" id="closeChangeReviewBtn" style="background:#eee">Close</button>' +
+    '<div id="changeReviewStatus" role="status" aria-live="polite"></div></div>';
+
+  var index = (studentDbState.requests || []).findIndex(function(item) { return String(item.id) === String(request.id); });
+  if (index >= 0) studentDbState.requests[index] = request;
+
+  var approve = detailCell.querySelector('#approveChangeBtn');
+  if (approve) approve.addEventListener('click', function() { decideStudentChangeRequest(request, this); });
+  var reject = detailCell.querySelector('#rejectChangeBtn');
+  if (reject) reject.addEventListener('click', function() { rejectChangeRequestForRectification(request.id); });
+  var history = detailCell.querySelector('#viewHistoryFromReview');
+  if (history) history.addEventListener('click', function() { showStudentChangeHistory(request.id); });
+  var close = detailCell.querySelector('#closeChangeReviewBtn');
+  if (close) close.addEventListener('click', function() {
+    reviewRow.remove();
+    studentDbState.activeChangeReviewRequestId = null;
+  });
+}
+
+async function refreshAdminCorrectionReview(requestId) {
+  return refreshOpenAdminCorrectionReview(requestId);
+}
 
 function studentDbError(error, fallback) {
   console.error('Student Database:', error);
@@ -2739,29 +2910,29 @@ function bindStudentDatabaseEvents(root) {
       } catch (error) { studentDbError(error, 'Unable to submit correction request.'); this.disabled = false; }
     });
   });
-  root.querySelectorAll('.change-request-view').forEach(function(button) { button.addEventListener('click', async function() {
-    var request = studentDbState.requests.find(function(item) { return String(item.id) === button.dataset.id; }); if (!request) return;
-    var clickedRow = button.closest('tr');
-    var previous = root.querySelector('#studentChangeReviewRow');
-    if (previous) previous.remove();
-    var detailRow = document.createElement('tr');
-    detailRow.id = 'studentChangeReviewRow';
-    var detailCell = document.createElement('td');
-    detailCell.colSpan = 6;
-    detailCell.innerHTML = '<div class="alert alert-info">Loading proposed changes…</div>';
-    detailRow.appendChild(detailCell);
-    clickedRow.parentNode.insertBefore(detailRow, clickedRow.nextSibling);
-    var itemsResult = await supabaseClient.from('student_change_request_items').select('*').eq('request_id', request.id);
-    if (itemsResult.error) { detailCell.innerHTML = '<p class="alert alert-error">Unable to load correction details: ' + escapeManagementText(itemsResult.error.message || 'Unknown error') + '</p>'; return; }
-    var status = String(request.status || '').toLowerCase();
-    detailCell.innerHTML = '<div class="card"><h4>Proposed Student Changes — Cycle ' + escapeManagementText(request.revision_number == null ? '—' : request.revision_number) + '</h4><div style="overflow-x:auto"><table><thead><tr><th>Field</th><th>Old Value</th><th>Proposed Value</th></tr></thead><tbody>' + (itemsResult.data || []).map(function(item) { return '<tr><td>' + escapeManagementText(item.field_name) + '</td><td>' + escapeManagementText(item.old_value) + '</td><td>' + escapeManagementText(item.new_value) + '</td></tr>'; }).join('') + '</tbody></table></div>' + (status === 'pending' ? '<button type="button" class="btn btn-success" id="approveChangeBtn">Approve</button> <button type="button" class="btn btn-danger" id="rejectChangeBtn">Reject for Rectification</button> ' : '') + '<button type="button" class="btn" id="viewHistoryFromReview" style="background:#eee">View Correction History</button> <button type="button" class="btn" id="closeChangeReviewBtn" style="background:#eee">Close</button><div id="changeReviewStatus" role="status" aria-live="polite"></div></div>';
-    var approve = detailCell.querySelector('#approveChangeBtn');
-    if (approve) approve.addEventListener('click', function() { decideStudentChangeRequest(request, this); });
-    var reject = detailCell.querySelector('#rejectChangeBtn');
-    if (reject) reject.addEventListener('click', function() { rejectChangeRequestForRectification(request.id); });
-    detailCell.querySelector('#viewHistoryFromReview').addEventListener('click', function() { showStudentChangeHistory(request.id); });
-    detailCell.querySelector('#closeChangeReviewBtn').addEventListener('click', function() { detailRow.remove(); });
-  }); });
+  root.querySelectorAll('.change-request-view').forEach(function(button) {
+    button.addEventListener('click', async function() {
+      var request = studentDbState.requests.find(function(item) {
+        return String(item.id) === button.dataset.id;
+      });
+      if (!request) return;
+
+      studentDbState.activeChangeReviewRequestId = request.id;
+      var clickedRow = button.closest('tr');
+      var previous = root.querySelector('#studentChangeReviewRow');
+      if (previous) previous.remove();
+
+      var detailRow = document.createElement('tr');
+      detailRow.id = 'studentChangeReviewRow';
+      var detailCell = document.createElement('td');
+      detailCell.colSpan = 6;
+      detailCell.innerHTML = '<div class="alert alert-info">Loading proposed changes…</div>';
+      detailRow.appendChild(detailCell);
+      clickedRow.parentNode.insertBefore(detailRow, clickedRow.nextSibling);
+
+      await refreshAdminCorrectionReview(request.id);
+    });
+  });
 }
 
 async function decideStudentChangeRequest(request, button) {
